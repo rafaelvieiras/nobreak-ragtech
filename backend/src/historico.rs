@@ -270,15 +270,33 @@ impl Historico {
     }
 }
 
-/// Lê um arquivo `.jsonl` de eventos, ignorando linhas inválidas. Fica com os mais recentes.
-pub fn ler_arquivo(caminho: &str) -> Vec<Evento> {
-    let txt = std::fs::read_to_string(caminho).unwrap_or_default();
+/// Extrai eventos de texto `.jsonl`. Tolera o lixo que uma queda de energia deixa no fim do
+/// arquivo (bloco de bytes nulos sem `\n`, que cola no próximo evento) e linhas truncadas.
+fn eventos_do_texto(bytes: &[u8]) -> Vec<Evento> {
+    let txt = String::from_utf8_lossy(bytes);
     let mut v: Vec<Evento> = txt
-        .lines()
-        .filter_map(|l| serde_json::from_str(l).ok())
+        .split('\n')
+        .filter_map(|l| {
+            serde_json::from_str(l.trim_matches(|c: char| c == '\0' || c.is_whitespace())).ok()
+        })
         .collect();
     if v.len() > MAX_EVENTOS {
         v.drain(..v.len() - MAX_EVENTOS);
+    }
+    v
+}
+
+/// Lê o arquivo de eventos e o reescreve limpo (sem bytes nulos nem linhas quebradas).
+pub fn ler_arquivo(caminho: &str) -> Vec<Evento> {
+    let bytes = std::fs::read(caminho).unwrap_or_default();
+    let v = eventos_do_texto(&bytes);
+    let limpo: String = v
+        .iter()
+        .filter_map(|e| serde_json::to_string(e).ok())
+        .map(|l| l + "\n")
+        .collect();
+    if limpo.as_bytes() != bytes.as_slice() && !bytes.is_empty() {
+        let _ = std::fs::write(caminho, limpo);
     }
     v
 }
@@ -414,6 +432,40 @@ mod testes {
         assert!(h.conexao(3, false, "timeout").is_some());
         assert!(h.conexao(4, false, "timeout").is_none());
         assert!(h.conexao(5, true, "").is_some());
+    }
+
+    #[test]
+    fn arquivo_com_lixo_de_queda_de_energia() {
+        let ev = |t: u64| {
+            serde_json::to_string(&Evento {
+                t,
+                tipo: "status".into(),
+                endereco: None,
+                de: None,
+                para: None,
+                texto: Some("OL → OB".into()),
+                entrada_v: 7.0,
+                bateria_v: 12.5,
+                bateria_pct: 100.0,
+            })
+            .unwrap()
+        };
+        // evento bom, bloco de nulos sem `\n` colado no evento seguinte, linha truncada, evento bom
+        let mut b = format!("{}\n", ev(1)).into_bytes();
+        b.extend(std::iter::repeat(0u8).take(300));
+        b.extend(format!("{}\n{{\"t\":9,\"tip\n{}\n", ev(2), ev(3)).into_bytes());
+        let v = eventos_do_texto(&b);
+        assert_eq!(v.iter().map(|e| e.t).collect::<Vec<_>>(), vec![1, 2, 3]);
+
+        let dir = std::env::temp_dir().join(format!("nb-lixo-{}", std::process::id()));
+        std::fs::write(&dir, &b).unwrap();
+        let p = dir.to_str().unwrap();
+        assert_eq!(ler_arquivo(p).len(), 3);
+        // o arquivo foi reescrito limpo: nenhum byte nulo, 3 linhas
+        let depois = std::fs::read(p).unwrap();
+        assert!(!depois.contains(&0));
+        assert_eq!(depois.iter().filter(|c| **c == b'\n').count(), 3);
+        let _ = std::fs::remove_file(p);
     }
 
     #[test]
