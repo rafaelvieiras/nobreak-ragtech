@@ -5,6 +5,7 @@ mod historico;
 mod leitura;
 mod longa;
 mod modelos;
+mod notificar;
 mod protocolo;
 mod quedas;
 
@@ -13,6 +14,7 @@ use fonte::Fonte;
 use historico::Historico;
 use leitura::{decodificar, status_nut, Brutos, Flags, InfoModelo, Medidas};
 use longa::SerieLonga;
+use notificar::{Destino, Detector, Leitura, Notificador};
 use quedas::Quedas;
 use rust_embed::RustEmbed;
 use serde::Serialize;
@@ -64,6 +66,11 @@ struct Config {
     arquivo_serie: Option<String>,
     serie_dias: u64,
     serie_intervalo_s: u64,
+    /// Webhook HTTP das notificações (`NOBREAK_WEBHOOK_URL`) e seus cabeçalhos extras.
+    webhook_url: Option<String>,
+    webhook_cabecalhos: Vec<String>,
+    notificar_nome: String,
+    notificar_eventos: String,
 }
 
 fn env(chave: &str, padrao: &str) -> String {
@@ -108,7 +115,32 @@ fn config() -> Config {
         serie_intervalo_s: env("NOBREAK_SERIE_INTERVALO_S", "900")
             .parse()
             .unwrap_or(900),
+        webhook_url: std::env::var("NOBREAK_WEBHOOK_URL")
+            .ok()
+            .filter(|v| !v.trim().is_empty()),
+        webhook_cabecalhos: env("NOBREAK_WEBHOOK_CABECALHOS", "")
+            .split('|')
+            .map(|x| x.trim().to_string())
+            .filter(|x| !x.is_empty())
+            .collect(),
+        notificar_nome: env("NOBREAK_NOTIFICAR_NOME", "Nobreak"),
+        notificar_eventos: env("NOBREAK_NOTIFICAR_EVENTOS", ""),
     }
+}
+
+/// Monta o destino do webhook a partir da configuração.
+fn destino_webhook(cfg: &Config) -> Result<Option<Destino>, String> {
+    let Some(u) = &cfg.webhook_url else {
+        return Ok(None);
+    };
+    let url = notificar::parse_url(u).map_err(|e| format!("NOBREAK_WEBHOOK_URL: {e}"))?;
+    let cabecalhos = cfg
+        .webhook_cabecalhos
+        .iter()
+        .map(|c| notificar::parse_cabecalho(c))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("NOBREAK_WEBHOOK_CABECALHOS: {e}"))?;
+    Ok(Some(Destino { url, cabecalhos }))
 }
 
 fn agora() -> u64 {
@@ -185,6 +217,7 @@ fn coletor(
     hist: Arc<Mutex<Historico>>,
     quedas: Arc<Mutex<Quedas>>,
     longa: Arc<Mutex<SerieLonga>>,
+    mut notif: Option<Notificador>,
 ) {
     let mut fonte = if cfg.simular {
         Fonte::Simulada(0)
@@ -244,6 +277,28 @@ fn coletor(
                         } else {
                             q.drenar();
                         }
+                        if let Some(n) = notif.as_mut() {
+                            let t = agora();
+                            let mut v = n.detector.conexao(t, true, "");
+                            v.extend(n.detector.leitura(
+                                t,
+                                &Leitura {
+                                    em_queda: st.starts_with("OB"),
+                                    bateria_pct: m.carga_bateria_pct,
+                                    alarmes: &e.alarmes,
+                                    duracao_ultima_queda_s:
+                                        q.lista().back().and_then(|x| x.duracao_s),
+                                },
+                            ));
+                            let saude = bateria::avaliar(
+                                &q,
+                                Some(m.temperatura_c),
+                                cfg.bateria_instalada,
+                                t,
+                            );
+                            v.extend(n.detector.saude(t, &saude.avisos));
+                            n.enviar(v);
+                        }
                     }
                 }
                 Err(msg) => {
@@ -254,6 +309,10 @@ fn coletor(
                         e.conectado = false;
                         let motivo = e.ultimo_erro.clone().unwrap_or_default();
                         novos.extend(hist.lock().unwrap().conexao(agora(), false, &motivo));
+                        if let Some(n) = notif.as_mut() {
+                            let v = n.detector.conexao(agora(), false, &motivo);
+                            n.enviar(v);
+                        }
                     }
                 }
             }
@@ -484,6 +543,40 @@ fn main() {
     }
 
     let cfg = config();
+    if std::env::args().any(|a| a == "--testar-webhook") {
+        // envia uma notificação de teste e sai (0 = o destino aceitou)
+        let r = destino_webhook(&cfg).and_then(|d| {
+            let d = d.ok_or("defina NOBREAK_WEBHOOK_URL")?;
+            d.enviar(&notificar::Notif {
+                evento: "teste",
+                gravidade: alarmes::Gravidade::Info,
+                titulo: format!("{}: teste", cfg.notificar_nome),
+                texto: "Notificação de teste do nobreak-ragtech.".into(),
+                t: agora(),
+            })
+        });
+        match r {
+            Ok(c) => println!("webhook respondeu HTTP {c}"),
+            Err(e) => {
+                eprintln!("falhou: {e}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+    let notificador = match destino_webhook(&cfg)
+        .and_then(|d| Ok((d, notificar::parse_filtro(&cfg.notificar_eventos)?)))
+    {
+        Ok((Some(d), filtro)) => Some(Notificador::iniciar(
+            Detector::novo(&cfg.notificar_nome, filtro),
+            d,
+        )),
+        Ok((None, _)) => None,
+        Err(e) => {
+            eprintln!("notificações desligadas: {e}");
+            None
+        }
+    };
     let escuta = cfg.escuta.clone();
     eprintln!(
         "nobreak-ragtech {} | porta={} escuta={} intervalo={}s simular={} fator_vbat={}",
@@ -522,7 +615,7 @@ fn main() {
         std::thread::Builder::new()
             .name("coletor".into())
             .stack_size(256 * 1024)
-            .spawn(move || coletor(cfg_coletor, estado, hist, quedas, longa))
+            .spawn(move || coletor(cfg_coletor, estado, hist, quedas, longa, notificador))
             .unwrap();
     }
     let servidor = Server::http(&escuta).unwrap_or_else(|e| {

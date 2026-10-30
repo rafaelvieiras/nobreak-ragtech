@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.0 (30/out/2026)
+- Notificações por webhook HTTP (`backend/src/notificar.rs`): queda, volta da rede, alarme, comunicação perdida e restabelecida, aviso de saúde da bateria. Variáveis `NOBREAK_WEBHOOK_URL`, `NOBREAK_WEBHOOK_CABECALHOS`, `NOBREAK_NOTIFICAR_NOME` e `NOBREAK_NOTIFICAR_EVENTOS`.
+- Novo comando `--testar-webhook`.
+
 ## 0.4.0 (30/out/2026)
 - Histórico de 30 dias (`/api/historico/longo`, `backend/src/longa.rs`): baldes de 15 min com média, mínimo e máximo, gravados em `NOBREAK_ARQUIVO_SERIE`. O painel mostra os gráficos com faixa mín–máx e corta a linha onde o serviço ficou parado.
 - Novas variáveis `NOBREAK_ARQUIVO_SERIE`, `NOBREAK_SERIE_DIAS` e `NOBREAK_SERIE_INTERVALO_S`.

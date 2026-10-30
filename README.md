@@ -18,6 +18,7 @@ ligado por USB num servidor, NAS ou Raspberry Pi, e o software oficial não roda
 - API JSON (`/api/estado`, `/api/eventos`, `/api/historico`, `/api/quedas`, `/api/bateria`, `/api/historico/longo`) e métricas Prometheus (`/metrics`).
 - **Alarmes com nome** (ausência de rede, fim de bateria, sobrecarga, sobretemperatura, falha do inversor...) e estado correto para o NUT (`OL`, `OB`, `LB`, `OVER`, `CHRG`).
 - **Resumo de quedas de energia** (24 h, 7 e 30 dias): quantidade, tempo na bateria, maior queda e bateria mínima. O começo de cada queda vai para o disco na hora, então uma queda que derruba o servidor não se perde.
+- **Notificações por webhook**: avisa em queda de energia, volta da rede, alarme novo, perda de comunicação e aviso de saúde da bateria. Envio em segundo plano, com novas tentativas, sem travar a leitura.
 - **Histórico de 30 dias**: baldes de 15 min com média, mínimo e máximo de rede, bateria, carga e temperatura, gravados em arquivo. Sobrevive a reinício. O mínimo mostra quedas curtas que a média esconde.
 - **Saúde da bateria**: tensão em repouso, autonomia projetada e tensão afundando a cada queda, tempo de recarga, temperatura e idade. Gera avisos no painel e em `/api/bateria`.
 - **Contador regressivo de desligamento** do nobreak, quando ativo.
@@ -57,6 +58,10 @@ Sem Docker, baixe o binário em [Releases](../../releases) e rode `./nobreak-rag
 | `NOBREAK_ARQUIVO_SERIE` | vazio | Arquivo `.jsonl` da série longa (cerca de 190 bytes por balde, uns 550 KB em 30 dias). Sem ele, a série longa fica só na memória |
 | `NOBREAK_SERIE_DIAS` | `30` | Dias guardados na série longa |
 | `NOBREAK_SERIE_INTERVALO_S` | `900` | Segundos por balde da série longa |
+| `NOBREAK_WEBHOOK_URL` | vazio | Liga as notificações. Só `http://` (o cliente não tem TLS, para o binário continuar leve). Para `https`, use um proxy local |
+| `NOBREAK_WEBHOOK_CABECALHOS` | vazio | Cabeçalhos extras, separados por `\|` (ex.: `Authorization: Bearer x\|X-Outro: 1`). Trate como segredo |
+| `NOBREAK_NOTIFICAR_NOME` | `Nobreak` | Prefixo do título das mensagens |
+| `NOBREAK_NOTIFICAR_EVENTOS` | vazio (todos) | Lista separada por vírgula: `queda`, `rede_voltou`, `alarme`, `desconectado`, `reconectado`, `saude` |
 | `NOBREAK_HISTORICO_PONTOS` | `1440` | Pontos guardados nos gráficos (memória, ~50 bytes cada) |
 | `NOBREAK_HISTORICO_INTERVALO_S` | `60` | Segundos entre pontos dos gráficos |
 | `NOBREAK_SIMULAR` | `0` | `1` usa dados de exemplo, com uma queda de energia simulada a cada minuto (para testar o painel) |
@@ -102,3 +107,24 @@ Requisitos: Rust 1.75+, Node 20+. Mais em [`CONTRIBUTING.md`](CONTRIBUTING.md).
 ## Licença
 
 [MIT](LICENSE).
+
+## Notificações
+
+Com `NOBREAK_WEBHOOK_URL` definida, o serviço faz um `POST` JSON a cada evento:
+
+```json
+{"evento":"queda","gravidade":"aviso","titulo":"Nobreak: falta de energia","texto":"O nobreak passou para a bateria (100%).","t":1793389130}
+```
+
+`gravidade` é `info`, `aviso` ou `erro`; `t` são segundos Unix. Para testar o destino sem esperar uma queda:
+
+```bash
+NOBREAK_WEBHOOK_URL=http://host:porta/caminho ./nobreak-ragtech --testar-webhook
+```
+
+Regras do envio:
+- Duas tentativas extras (após 2 s e 10 s). Se falhar, o erro vai para o log e a mensagem é descartada.
+- Fila de 32 mensagens. Se o destino ficar fora do ar por muito tempo, as mais novas são descartadas.
+- O mesmo alarme só reaparece depois de 10 min, e o mesmo aviso de saúde depois de 6 h.
+- A falta de rede gera só o aviso de queda, não um alarme a mais.
+- URL ou cabeçalho inválido desliga as notificações e escreve o motivo no log. A leitura do nobreak continua.
