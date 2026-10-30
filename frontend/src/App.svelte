@@ -1,10 +1,11 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { buscarEstado, buscarEventos, buscarSerie, buscarQuedas, type Estado, type Eventos as TEventos, type Serie, type Quedas as TQuedas } from './api'
+  import { buscarEstado, buscarEventos, buscarSerie, buscarQuedas, buscarBateria, type Saude, type Estado, type Eventos as TEventos, type Serie, type Quedas as TQuedas } from './api'
   import Grafico from './Grafico.svelte'
   import Eventos from './Eventos.svelte'
   import Cartao from './Cartao.svelte'
   import Quedas from './Quedas.svelte'
+  import Bateria from './Bateria.svelte'
 
   let e = $state<Estado | null>(null)
   let falhaApi = $state<string | null>(null)
@@ -12,13 +13,14 @@
   let ev = $state<TEventos | null>(null)
   let serie = $state<Serie | null>(null)
   let quedas = $state<TQuedas | null>(null)
+  let saude = $state<Saude | null>(null)
 
   async function atualizar() {
     try { e = await buscarEstado(); falhaApi = null } catch (x) { falhaApi = String(x) }
     agora = Date.now()
   }
   async function atualizarHistorico() {
-    try { [ev, serie, quedas] = await Promise.all([buscarEventos(), buscarSerie(), buscarQuedas()]) } catch { /* mantém o que já tem */ }
+    try { [ev, serie, quedas, saude] = await Promise.all([buscarEventos(), buscarSerie(), buscarQuedas(), buscarBateria()]) } catch { /* mantém o que já tem */ }
   }
   onMount(() => {
     atualizar(); atualizarHistorico()
@@ -90,6 +92,11 @@
       <Cartao rotulo="Carga na saída" valor={f(m.carga_saida_pct, 0)} unidade="%" barra={m.carga_saida_pct} />
       <Cartao rotulo="Potência aparente" valor={f(m.tensao_saida_v * m.corrente_saida_a, 0)} unidade="VA" />
     </div>
+  {/if}
+
+  {#if saude}
+    <h2>Saúde da bateria</h2>
+    <Bateria dados={saude} />
   {/if}
 
   {#if quedas}

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.1 (30/out/2026)
+- Saúde da bateria (`/api/bateria`, painel e métricas `nobreak_bateria_*`): tensão em repouso, autonomia projetada pela queda, afundamento de tensão, tempo de recarga até 99%, temperatura e idade. Os limites estão em `backend/src/bateria.rs`.
+- Nova variável `NOBREAK_BATERIA_INSTALADA`.
+- O arquivo de quedas guarda tensão mínima da bateria, carga máxima e recarga (linhas antigas continuam válidas).
+- Ao aparar o log de eventos (limite de 500), saem primeiro as mudanças de registrador sem nome. Estado, conexão e bits com nome ficam.
+
 ## 0.3.0 (30/out/2026)
 - Alarmes com nome a partir dos bits de `EVENTOS` e `FALHAS`; aparecem no topo do painel, em `/api/estado` (`alarmes`) e em `ups.alarm` do NUT.
 - Estado do NUT passa a usar o bit de ausência de rede (`OB`) e os de bateria baixa/fim de bateria (`LB`) e sobrecarga (`OVER`), em vez de só a tensão de entrada.

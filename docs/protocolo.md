@@ -149,3 +149,20 @@ Com a rede estável e a carga em 2%, quatro registradores alternam sozinhos a ca
 
 Já `0x80`, `0x90`, `0x91` e `0x92` ficam parados nesse estado. Por isso o painel só destaca esses últimos como candidatos a alarme
 (o painel já trata como "ruidoso", só contando, o registrador que muda mais de 30 vezes em 10 minutos).
+
+## Saúde da bateria (calculada, sem registrador novo)
+
+`backend/src/bateria.rs` avalia a bateria com o que o serviço já mede. Os limites são heurísticas para chumbo-ácido selada de 12 V (valores dobram em 24 V):
+
+| Aviso | Regra |
+|---|---|
+| Tensão em repouso baixa / muito baixa | média com a rede ligada e carga a 99% abaixo de 13,0 V / 12,4 V |
+| Tensão em repouso alta | acima de 14,6 V (carregador) |
+| Autonomia curta / crítica | projeção de 100% a 0% abaixo de 10 / 3 min |
+| Autonomia caindo | última queda abaixo de 60% da média das 5 anteriores |
+| Tensão afunda | queda de 1,5 V ou mais no começo da queda |
+| Recarga lenta | mais de 12 h até 99% |
+| Temperatura | 60 °C aviso, 70 °C erro |
+| Idade | 3 anos aviso, 4 anos erro (precisa de `NOBREAK_BATERIA_INSTALADA`) |
+
+A autonomia projetada só vale para quedas de 30 s ou mais que perdem 5 pontos de carga ou mais. Ela supõe descarga linear, então serve para comparar quedas com carga parecida, não como número exato. A tensão em repouso precisa de cerca de 5 min com a bateria cheia.

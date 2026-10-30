@@ -1,4 +1,5 @@
 mod alarmes;
+mod bateria;
 mod fonte;
 mod historico;
 mod leitura;
@@ -42,6 +43,7 @@ struct Estado {
     osc_0x202: Option<[u8; 2]>,
 }
 
+#[derive(Clone)]
 struct Config {
     porta: String,
     escuta: String,
@@ -52,6 +54,8 @@ struct Config {
     fator_vbat: f32,
     arquivo_eventos: Option<String>,
     arquivo_quedas: Option<String>,
+    /// Data de instalação da bateria (segundos Unix), de `NOBREAK_BATERIA_INSTALADA`.
+    bateria_instalada: Option<u64>,
     historico_pontos: usize,
     historico_intervalo_s: u64,
 }
@@ -84,6 +88,7 @@ fn config() -> Config {
         arquivo_quedas: std::env::var("NOBREAK_ARQUIVO_QUEDAS")
             .ok()
             .filter(|v| !v.is_empty()),
+        bateria_instalada: bateria::parse_data(&env("NOBREAK_BATERIA_INSTALADA", "")),
         historico_pontos: env("NOBREAK_HISTORICO_PONTOS", "1440")
             .parse()
             .unwrap_or(1440),
@@ -198,6 +203,14 @@ fn coletor(
                             m.carga_bateria_pct,
                             m.tensao_entrada_v,
                         );
+                        q.detalhar(
+                            agora(),
+                            quedas::Detalhe {
+                                bateria_pct: m.carga_bateria_pct,
+                                bateria_v: m.tensao_bateria_v,
+                                carga_pct: m.carga_saida_pct,
+                            },
+                        );
                         if let Some(p) = &cfg.arquivo_quedas {
                             quedas::anexar_arquivo(p, &q.drenar());
                         } else {
@@ -231,7 +244,7 @@ fn json(corpo: String, codigo: u16) -> Response<std::io::Cursor<Vec<u8>>> {
         .with_header(Header::from_bytes("Cache-Control", "no-store").unwrap())
 }
 
-fn metricas(e: &Estado, q: &Quedas) -> String {
+fn metricas(e: &Estado, q: &Quedas, cfg: &Config) -> String {
     let mut s = String::new();
     let mut g = |nome: &str, ajuda: &str, v: f64| {
         s += &format!(
@@ -284,6 +297,38 @@ fn metricas(e: &Estado, q: &Quedas) -> String {
         "quantidade de alarmes ligados agora",
         e.alarmes.len() as f64,
     );
+    let saude = bateria::avaliar(
+        q,
+        e.medidas.as_ref().map(|m| m.temperatura_c),
+        cfg.bateria_instalada,
+        agora(),
+    );
+    g(
+        "bateria_avisos",
+        "quantidade de avisos de saúde da bateria",
+        saude.avisos.len() as f64,
+    );
+    if let Some(v) = saude.tensao_repouso_v {
+        g(
+            "bateria_tensao_repouso_volts",
+            "tensão média da bateria com a rede ligada e a carga completa",
+            v as f64,
+        );
+    }
+    if let Some(a) = saude
+        .ultima_queda
+        .as_ref()
+        .and_then(|u| u.autonomia_projetada_min)
+    {
+        g(
+            "bateria_autonomia_projetada_minutos",
+            "autonomia de 100% a 0% projetada pela última queda",
+            a as f64,
+        );
+    }
+    if let Some(d) = saude.idade_dias {
+        g("bateria_idade_dias", "idade da bateria informada", d as f64);
+    }
     let r = q.resumo(agora(), 86_400);
     g(
         "quedas_24h",
@@ -299,6 +344,7 @@ fn metricas(e: &Estado, q: &Quedas) -> String {
 }
 
 fn servir(
+    cfg: &Config,
     estado: &Arc<Mutex<Estado>>,
     hist: &Arc<Mutex<Historico>>,
     quedas: &Arc<Mutex<Quedas>>,
@@ -331,6 +377,21 @@ fn servir(
                 200,
             )
         }
+        "/api/bateria" => {
+            let temp = estado
+                .lock()
+                .unwrap()
+                .medidas
+                .as_ref()
+                .map(|m| m.temperatura_c);
+            let s = bateria::avaliar(
+                &quedas.lock().unwrap(),
+                temp,
+                cfg.bateria_instalada,
+                agora(),
+            );
+            json(serde_json::to_string(&s).unwrap(), 200)
+        }
         "/api/saude" => {
             let e = estado.lock().unwrap();
             let obsoleto = e
@@ -340,12 +401,12 @@ fn servir(
             let ok = e.conectado && !obsoleto;
             json(format!("{{\"ok\":{ok}}}"), if ok { 200 } else { 503 })
         }
-        "/metrics" => {
-            Response::from_string(metricas(&estado.lock().unwrap(), &quedas.lock().unwrap()))
-                .with_header(
-                    Header::from_bytes("Content-Type", "text/plain; version=0.0.4").unwrap(),
-                )
-        }
+        "/metrics" => Response::from_string(metricas(
+            &estado.lock().unwrap(),
+            &quedas.lock().unwrap(),
+            cfg,
+        ))
+        .with_header(Header::from_bytes("Content-Type", "text/plain; version=0.0.4").unwrap()),
         _ => {
             let nome = caminho.trim_start_matches('/');
             let nome = if nome.is_empty() { "index.html" } else { nome };
@@ -419,10 +480,11 @@ fn main() {
         let estado = estado.clone();
         let hist = hist.clone();
         let quedas = quedas.clone();
+        let cfg_coletor = cfg.clone();
         std::thread::Builder::new()
             .name("coletor".into())
             .stack_size(256 * 1024)
-            .spawn(move || coletor(cfg, estado, hist, quedas))
+            .spawn(move || coletor(cfg_coletor, estado, hist, quedas))
             .unwrap();
     }
     let servidor = Server::http(&escuta).unwrap_or_else(|e| {
@@ -430,7 +492,7 @@ fn main() {
         std::process::exit(1);
     });
     for req in servidor.incoming_requests() {
-        let resp = servir(&estado, &hist, &quedas, req.method(), req.url());
+        let resp = servir(&cfg, &estado, &hist, &quedas, req.method(), req.url());
         let _ = req.respond(resp);
     }
 }

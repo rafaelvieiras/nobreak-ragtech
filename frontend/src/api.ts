@@ -43,9 +43,21 @@ export const buscarSerie = () => get<Serie>('/api/historico')
 export interface Queda {
   inicio: number; fim: number | null; duracao_s: number | null
   bateria_inicio_pct: number; bateria_min_pct: number; entrada_min_v: number; interrompida: boolean
+  bateria_v_inicio: number | null; bateria_v_min: number | null; carga_max_pct: number | null; recarga_s: number | null
 }
 export interface ResumoQuedas { quedas: number; segundos_em_bateria: number; maior_s: number; bateria_min_pct: number | null; interrompidas: number }
 export interface Quedas {
   em_curso: boolean; ultimas_24h: ResumoQuedas; ultimos_7_dias: ResumoQuedas; ultimos_30_dias: ResumoQuedas; lista: Queda[]
 }
 export const buscarQuedas = () => get<Quedas>('/api/quedas')
+
+export interface AvisoBateria { codigo: string; texto: string; gravidade: 'info' | 'aviso' | 'erro' }
+export interface AnaliseQueda {
+  inicio: number; duracao_s: number; queda_tensao_v: number | null; carga_max_pct: number | null
+  autonomia_projetada_min: number | null; recarga_s: number | null
+}
+export interface Saude {
+  tensao_repouso_v: number | null; nominal_v: number | null; temperatura_c: number | null; idade_dias: number | null
+  ultima_queda: AnaliseQueda | null; autonomia_anterior_min: number | null; recarregando: boolean; avisos: AvisoBateria[]
+}
+export const buscarBateria = () => get<Saude>('/api/bateria')

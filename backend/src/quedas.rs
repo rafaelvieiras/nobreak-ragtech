@@ -16,6 +16,13 @@ pub struct Queda {
     pub bateria_inicio_pct: f32,
     pub bateria_min_pct: f32,
     pub entrada_min_v: f32,
+    /// Tensão da bateria no começo da queda e a menor vista nela (`None` em registros antigos).
+    pub bateria_v_inicio: Option<f32>,
+    pub bateria_v_min: Option<f32>,
+    /// Maior carga na saída durante a queda.
+    pub carga_max_pct: Option<f32>,
+    /// Tempo entre o fim da queda e a bateria voltar a 99%. `None` enquanto recarrega.
+    pub recarga_s: Option<u64>,
     /// O serviço parou durante a queda: a duração real é desconhecida.
     pub interrompida: bool,
 }
@@ -28,6 +35,12 @@ pub struct Linha {
     pub ev: String,
     pub bateria_pct: f32,
     pub entrada_v: f32,
+    /// `inicio`: tensão atual. `fim`: menor tensão da queda.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bateria_v: Option<f32>,
+    /// `inicio`: carga atual. `fim`: maior carga da queda.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub carga_pct: Option<f32>,
 }
 
 #[derive(Serialize, Clone, Debug, Default, PartialEq)]
@@ -45,6 +58,16 @@ pub struct Resumo {
 pub struct Quedas {
     lista: VecDeque<Queda>,
     pendentes: Vec<Linha>,
+    /// Tensão da bateria em repouso (rede ligada, 100%, carga completa).
+    pub repouso: crate::bateria::Repouso,
+}
+
+/// Leitura da bateria e da saída, para detalhar a queda e a recarga.
+#[derive(Clone, Copy)]
+pub struct Detalhe {
+    pub bateria_pct: f32,
+    pub bateria_v: f32,
+    pub carga_pct: f32,
 }
 
 impl Quedas {
@@ -53,6 +76,40 @@ impl Quedas {
             .back()
             .map(|q| q.fim.is_none() && !q.interrompida)
             .unwrap_or(false)
+    }
+
+    pub fn lista(&self) -> &VecDeque<Queda> {
+        &self.lista
+    }
+
+    /// A última queda terminou e a bateria ainda não voltou a 99%.
+    pub fn recarregando(&self) -> bool {
+        self.lista
+            .back()
+            .map(|q| q.fim.is_some() && q.recarga_s.is_none() && !q.interrompida)
+            .unwrap_or(false)
+    }
+
+    fn nova(
+        t: u64,
+        bateria_pct: f32,
+        entrada_v: f32,
+        bateria_v: Option<f32>,
+        carga: Option<f32>,
+    ) -> Queda {
+        Queda {
+            inicio: t,
+            fim: None,
+            duracao_s: None,
+            bateria_inicio_pct: bateria_pct,
+            bateria_min_pct: bateria_pct,
+            entrada_min_v: entrada_v,
+            bateria_v_inicio: bateria_v,
+            bateria_v_min: bateria_v,
+            carga_max_pct: carga,
+            recarga_s: None,
+            interrompida: false,
+        }
     }
 
     fn empurrar(&mut self, q: Queda) {
@@ -73,15 +130,13 @@ impl Quedas {
                             q.interrompida = true;
                         }
                     }
-                    self.empurrar(Queda {
-                        inicio: l.t,
-                        fim: None,
-                        duracao_s: None,
-                        bateria_inicio_pct: l.bateria_pct,
-                        bateria_min_pct: l.bateria_pct,
-                        entrada_min_v: l.entrada_v,
-                        interrompida: false,
-                    });
+                    self.empurrar(Self::nova(
+                        l.t,
+                        l.bateria_pct,
+                        l.entrada_v,
+                        l.bateria_v,
+                        l.carga_pct,
+                    ));
                 }
                 "fim" => {
                     if let Some(q) = self.lista.back_mut() {
@@ -90,6 +145,15 @@ impl Quedas {
                             q.duracao_s = Some(l.t.saturating_sub(q.inicio));
                             q.bateria_min_pct = q.bateria_min_pct.min(l.bateria_pct);
                             q.entrada_min_v = q.entrada_min_v.min(l.entrada_v);
+                            q.bateria_v_min = menor(q.bateria_v_min, l.bateria_v);
+                            q.carga_max_pct = maior(q.carga_max_pct, l.carga_pct);
+                        }
+                    }
+                }
+                "recarga" => {
+                    if let Some(q) = self.lista.back_mut() {
+                        if let (Some(f), None) = (q.fim, q.recarga_s) {
+                            q.recarga_s = Some(l.t.saturating_sub(f));
                         }
                     }
                 }
@@ -113,30 +177,29 @@ impl Quedas {
                     q.entrada_min_v = q.entrada_min_v.min(entrada_v);
                 }
             } else {
-                self.empurrar(Queda {
-                    inicio: t,
-                    fim: None,
-                    duracao_s: None,
-                    bateria_inicio_pct: bateria_pct,
-                    bateria_min_pct: bateria_pct,
-                    entrada_min_v: entrada_v,
-                    interrompida: false,
-                });
+                self.empurrar(Self::nova(t, bateria_pct, entrada_v, None, None));
                 self.pendentes.push(Linha {
                     t,
                     ev: "inicio".into(),
                     bateria_pct,
                     entrada_v,
+                    bateria_v: None,
+                    carga_pct: None,
                 });
             }
         } else if self.em_curso() {
-            let (min_bat, min_v) = match self.lista.back_mut() {
+            let (min_bat, min_v, vbat, carga) = match self.lista.back_mut() {
                 Some(q) => {
                     q.fim = Some(t);
                     q.duracao_s = Some(t.saturating_sub(q.inicio));
-                    (q.bateria_min_pct, q.entrada_min_v)
+                    (
+                        q.bateria_min_pct,
+                        q.entrada_min_v,
+                        q.bateria_v_min,
+                        q.carga_max_pct,
+                    )
                 }
-                None => (bateria_pct, entrada_v),
+                None => (bateria_pct, entrada_v, None, None),
             };
             // a linha `fim` leva os mínimos, para o resumo sobreviver a reinícios
             self.pendentes.push(Linha {
@@ -144,7 +207,43 @@ impl Quedas {
                 ev: "fim".into(),
                 bateria_pct: min_bat,
                 entrada_v: min_v,
+                bateria_v: vbat,
+                carga_pct: carga,
             });
+        }
+    }
+
+    /// Detalhes da leitura: tensão mínima e carga máxima da queda em curso, tempo de recarga
+    /// depois dela e tensão de repouso. Chamar depois de `atualizar`.
+    pub fn detalhar(&mut self, t: u64, d: Detalhe) {
+        if self.em_curso() {
+            if let Some(q) = self.lista.back_mut() {
+                if q.bateria_v_inicio.is_none() {
+                    q.bateria_v_inicio = Some(d.bateria_v);
+                }
+                q.bateria_v_min = menor(q.bateria_v_min, Some(d.bateria_v));
+                q.carga_max_pct = maior(q.carga_max_pct, Some(d.carga_pct));
+            }
+            return;
+        }
+        if self.recarregando() {
+            if d.bateria_pct >= 99.0 {
+                if let Some(q) = self.lista.back_mut() {
+                    q.recarga_s = q.fim.map(|f| t.saturating_sub(f));
+                }
+                self.pendentes.push(Linha {
+                    t,
+                    ev: "recarga".into(),
+                    bateria_pct: d.bateria_pct,
+                    entrada_v: 0.0,
+                    bateria_v: Some(d.bateria_v),
+                    carga_pct: None,
+                });
+            }
+            return;
+        }
+        if d.bateria_pct >= 99.0 {
+            self.repouso.amostrar(d.bateria_v);
         }
     }
 
@@ -191,6 +290,20 @@ impl Quedas {
                 q
             })
             .collect()
+    }
+}
+
+fn menor(a: Option<f32>, b: Option<f32>) -> Option<f32> {
+    match (a, b) {
+        (Some(x), Some(y)) => Some(x.min(y)),
+        (x, y) => x.or(y),
+    }
+}
+
+fn maior(a: Option<f32>, b: Option<f32>) -> Option<f32> {
+    match (a, b) {
+        (Some(x), Some(y)) => Some(x.max(y)),
+        (x, y) => x.or(y),
     }
 }
 
@@ -293,6 +406,8 @@ mod testes {
             ev: ev.into(),
             bateria_pct: b,
             entrada_v: 5.0,
+            bateria_v: None,
+            carga_pct: None,
         };
         let mut q = Quedas::default();
         // 1ª completa; 2ª sem `fim` (o servidor morreu na queda)
@@ -312,6 +427,82 @@ mod testes {
             (r.quedas, r.interrompidas, r.segundos_em_bateria),
             (2, 1, 50)
         );
+    }
+
+    fn d(pct: f32, v: f32, carga: f32) -> Detalhe {
+        Detalhe {
+            bateria_pct: pct,
+            bateria_v: v,
+            carga_pct: carga,
+        }
+    }
+
+    #[test]
+    fn detalha_queda_e_recarga() {
+        let mut q = Quedas::default();
+        q.atualizar(100, true, 100.0, 5.0);
+        q.detalhar(100, d(100.0, 13.0, 10.0));
+        q.atualizar(130, true, 80.0, 5.0);
+        q.detalhar(130, d(80.0, 11.8, 25.0));
+        q.atualizar(160, false, 80.0, 120.0);
+        q.detalhar(160, d(80.0, 12.6, 25.0));
+        assert!(q.recarregando());
+        q.atualizar(1000, false, 95.0, 120.0);
+        q.detalhar(1000, d(95.0, 13.8, 5.0));
+        assert!(q.recarregando());
+        q.atualizar(4000, false, 100.0, 120.0);
+        q.detalhar(4000, d(100.0, 13.4, 5.0));
+        assert!(!q.recarregando());
+        let x = &q.lista()[0];
+        assert_eq!(x.bateria_v_min, Some(11.8));
+        assert_eq!(x.carga_max_pct, Some(25.0));
+        assert_eq!(x.recarga_s, Some(3840));
+        let l = q.drenar();
+        assert_eq!(
+            l.iter().map(|l| l.ev.as_str()).collect::<Vec<_>>(),
+            ["inicio", "fim", "recarga"]
+        );
+        assert_eq!(l[1].bateria_v, Some(11.8));
+    }
+
+    #[test]
+    fn restaura_detalhes_e_aceita_linhas_antigas() {
+        let mut q = Quedas::default();
+        q.restaurar(&[
+            Linha {
+                t: 100,
+                ev: "inicio".into(),
+                bateria_pct: 100.0,
+                entrada_v: 5.0,
+                bateria_v: Some(13.0),
+                carga_pct: Some(10.0),
+            },
+            Linha {
+                t: 160,
+                ev: "fim".into(),
+                bateria_pct: 70.0,
+                entrada_v: 5.0,
+                bateria_v: Some(11.9),
+                carga_pct: Some(30.0),
+            },
+            Linha {
+                t: 3760,
+                ev: "recarga".into(),
+                bateria_pct: 99.0,
+                entrada_v: 0.0,
+                bateria_v: None,
+                carga_pct: None,
+            },
+        ]);
+        let x = &q.lista()[0];
+        assert_eq!(
+            (x.bateria_v_min, x.carga_max_pct, x.recarga_s),
+            (Some(11.9), Some(30.0), Some(3600))
+        );
+        let velha: Linha =
+            serde_json::from_str(r#"{"t":1,"ev":"inicio","bateria_pct":100.0,"entrada_v":5.0}"#)
+                .unwrap();
+        assert_eq!(velha.bateria_v, None);
     }
 
     #[test]
