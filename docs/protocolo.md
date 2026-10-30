@@ -77,6 +77,50 @@ onde `osc53` e `osc57` são os registradores `0x202` e `0x203`. Resultado típic
 (~26,8 V), mas o dono do nobreak concluiu que esse valor estava errado. Se o seu exemplar tiver bateria de 24 V e o painel mostrar
 metade, use `NOBREAK_FATOR_VBAT=2` e conte na issue o modelo e a medida com multímetro.
 
+## Bits de FALHAS, EVENTOS e USUARIO (família 10, engenharia reversa do Supervise 6.3, 30/out/2026)
+
+Origem: a função que converte registradores em campos internos (`EasyNB::UpsVarToNBVar`) e a que grava o log
+(`SrvClass::AddToLog*SetBits`), cruzadas com o arquivo de idiomas. A descrição abaixo está em palavras próprias.
+Confiança: **alta** onde há mensagem; **lacuna** onde o app converte o bit mas não mostra mensagem.
+
+### `0x91` FALHAS
+| Bit | Máscara | Significado |
+|---|---|---|
+| 0 | `0x01` | bateria baixa (vira estado, não falha) |
+| 1 | `0x02` | sobretemperatura |
+| 2 | `0x04` | **fim de bateria** |
+| 3 | `0x08` | sobrecarga na saída |
+| 4 | `0x10` | tensão de saída anormal |
+| 5 | `0x20` | tensão de bateria anormal |
+| 6 | `0x40` | falha do inversor |
+
+### `0x90` EVENTOS
+| Bit | Máscara | Significado |
+|---|---|---|
+| 2 | `0x04` | descarga completa das baterias ativada |
+| 3 | `0x08` | **ausência de rede elétrica** (observado: liga na queda) |
+| 4 | `0x10` | tensão de rede baixa |
+| 5 | `0x20` | tensão de rede alta |
+| 6 | `0x40` | lacuna; liga junto com o bit 3 na queda (provável "modo bateria") |
+| 0 | `0x01` | lacuna (campo interno sem mensagem) |
+
+### `0x92` USUARIO
+| Bit | Máscara | Significado |
+|---|---|---|
+| 1 | `0x02` | Supervise presente (escrito pelo app) |
+| 0 | `0x01` | lacuna; liga com a rede presente e **apaga na queda** (observado) |
+| 2, 3, 5 | `0x04`, `0x08`, `0x20` | lacuna (campos internos sem mensagem) |
+| 4 | `0x10` | limpa o estado "inicializando" quando ligado |
+
+`0x80` NVOLATIL: o app só usa o bit 4 (`0x10`), que limpa o estado "bateria baixa". Os outros bits não têm uso no app.
+`0x95` GERAIS2: sem uso encontrado na conversão.
+
+### Consequências
+- `FALHAS` ainda **nunca mudou** nas observações do Moon: nenhuma queda chegou a esgotar a bateria (`0x04`).
+- Nas duas quedas curtas, `0x90` foi de `0x00` a `0x48` (bits 3 e 6) e voltou; combina com a tabela.
+- O LED que pisca depois de queda não aparece como bit de `FALHAS`/`EVENTOS` nesta tabela. Provável: um bit guardado de `0x80`
+  (gravado só pelo firmware) ou uma falha que o app não mostra.
+
 ## Pistas sobre o LED que fica piscando depois de queda de energia [hipótese]
 
 O software oficial grava no registrador `0x80` com o quadro `AA 02 00 80 FE cks` (AND com `0xFE`, zera o bit 0).
