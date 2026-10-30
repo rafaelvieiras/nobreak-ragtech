@@ -51,7 +51,7 @@ export interface Quedas {
 }
 export const buscarQuedas = () => get<Quedas>('/api/quedas')
 
-export interface AvisoBateria { codigo: string; texto: string; gravidade: 'info' | 'aviso' | 'erro' }
+export interface AvisoBateria { codigo: string; texto: string; gravidade: 'info' | 'aviso' | 'erro'; params?: Record<string, number> }
 export interface AnaliseQueda {
   inicio: number; duracao_s: number; queda_tensao_v: number | null; carga_max_pct: number | null
   autonomia_projetada_min: number | null; recarga_s: number | null

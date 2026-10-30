@@ -522,6 +522,7 @@ mod testes {
             codigo: "autonomia_curta",
             texto: "Autonomia de 5 min".into(),
             gravidade: Gravidade::Aviso,
+            params: Default::default(),
         };
         assert_eq!(evs(&d.saude(0, std::slice::from_ref(&a))), ["saude"]);
         assert!(d.saude(60, std::slice::from_ref(&a)).is_empty());

@@ -6,6 +6,7 @@
 use crate::alarmes::Gravidade;
 use crate::quedas::{Queda, Quedas};
 use serde::Serialize;
+use std::collections::BTreeMap;
 
 /// Amostras em repouso necessárias antes de confiar na média (5 s cada: cerca de 5 min).
 const AMOSTRAS_MIN: u32 = 60;
@@ -40,15 +41,24 @@ impl Repouso {
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct Aviso {
     pub codigo: &'static str,
+    /// Texto pronto em português (reserva para quem não traduz pelo `codigo`).
     pub texto: String,
     pub gravidade: Gravidade,
+    /// Valores usados no texto (`v`, `m`, `media`, `d`, `h`, `t`, `anos`), para o cliente traduzir.
+    pub params: BTreeMap<&'static str, f64>,
 }
 
-fn aviso(codigo: &'static str, gravidade: Gravidade, texto: String) -> Aviso {
+fn aviso(
+    codigo: &'static str,
+    gravidade: Gravidade,
+    texto: String,
+    params: &[(&'static str, f64)],
+) -> Aviso {
     Aviso {
         codigo,
         texto,
         gravidade,
+        params: params.iter().copied().collect(),
     }
 }
 
@@ -123,19 +133,21 @@ pub fn avaliar(
             av.push(aviso(
                 "repouso_muito_baixo",
                 Gravidade::Erro,
-                format!("Tensão em repouso muito baixa ({v:.2} V): bateria provavelmente no fim da vida"),
+                format!("Tensão em repouso muito baixa ({v:.2} V): bateria provavelmente no fim da vida"), &[("v", v as f64)],
             ));
         } else if v < 13.0 * k {
             av.push(aviso(
                 "repouso_baixo",
                 Gravidade::Aviso,
                 format!("Tensão em repouso baixa ({v:.2} V) com a rede ligada e a carga completa"),
+                &[("v", v as f64)],
             ));
         } else if v > 14.6 * k {
             av.push(aviso(
                 "repouso_alto",
                 Gravidade::Aviso,
                 format!("Tensão em repouso alta ({v:.2} V): carregador pode estar com defeito"),
+                &[("v", v as f64)],
             ));
         }
     }
@@ -158,12 +170,14 @@ pub fn avaliar(
                     format!(
                         "Autonomia projetada de {m:.0} min na última queda: bateria muito fraca"
                     ),
+                    &[("m", m as f64)],
                 ));
             } else if m < 10.0 {
                 av.push(aviso(
                     "autonomia_curta",
                     Gravidade::Aviso,
                     format!("Autonomia projetada de {m:.0} min na última queda"),
+                    &[("m", m as f64)],
                 ));
             }
             let antes: Vec<f32> = analisaveis[1..]
@@ -178,7 +192,7 @@ pub fn avaliar(
                     av.push(aviso(
                         "autonomia_caindo",
                         Gravidade::Aviso,
-                        format!("Autonomia caiu: {m:.0} min contra média de {media:.0} min nas quedas anteriores"),
+                        format!("Autonomia caiu: {m:.0} min contra média de {media:.0} min nas quedas anteriores"), &[("m", m as f64), ("media", media as f64)],
                     ));
                 }
             }
@@ -188,7 +202,7 @@ pub fn avaliar(
                 av.push(aviso(
                     "tensao_afunda",
                     Gravidade::Aviso,
-                    format!("A tensão caiu {d:.1} V durante a última queda: bateria com resistência interna alta"),
+                    format!("A tensão caiu {d:.1} V durante a última queda: bateria com resistência interna alta"), &[("d", d as f64)],
                 ));
             }
         }
@@ -202,6 +216,7 @@ pub fn avaliar(
                     "recarga_lenta",
                     Gravidade::Aviso,
                     format!("A última recarga levou {} h até 99%", r / 3600),
+                    &[("h", (r / 3600) as f64)],
                 ));
             }
         }
@@ -213,12 +228,14 @@ pub fn avaliar(
                 "temperatura_critica",
                 Gravidade::Erro,
                 format!("Temperatura do inversor em {t:.0} °C"),
+                &[("t", t as f64)],
             ));
         } else if t >= 60.0 {
             av.push(aviso(
                 "temperatura_alta",
                 Gravidade::Aviso,
                 format!("Temperatura do inversor em {t:.0} °C"),
+                &[("t", t as f64)],
             ));
         }
     }
@@ -232,12 +249,14 @@ pub fn avaliar(
                 "bateria_velha",
                 Gravidade::Erro,
                 format!("Bateria com {anos:.1} anos: troque (a vida típica é de 3 a 5 anos)"),
+                &[("anos", anos as f64)],
             ));
         } else if idade >= 3 * ANO_S {
             av.push(aviso(
                 "bateria_envelhecendo",
                 Gravidade::Aviso,
                 format!("Bateria com {anos:.1} anos: planeje a troca"),
+                &[("anos", anos as f64)],
             ));
         }
     }
@@ -416,6 +435,13 @@ mod testes {
         let s = avaliar(&q, None, Some(inst), em(4.5));
         assert_eq!(codigos(&s), ["bateria_velha"]);
         assert!(s.idade_dias.unwrap() > 1600);
+        // o cliente traduz pelo código e pelos valores, sem depender do texto em português
+        let anos = s.avisos[0].params["anos"];
+        assert!((anos - 4.5).abs() < 0.05, "anos = {anos}");
+        let json = serde_json::to_value(&s.avisos[0]).unwrap();
+        assert_eq!(json["codigo"], "bateria_velha");
+        assert!(json["params"]["anos"].is_number());
+        assert!(json["texto"].as_str().unwrap().contains("troque"));
     }
 
     #[test]
