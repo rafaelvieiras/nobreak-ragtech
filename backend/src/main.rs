@@ -3,6 +3,7 @@ mod bateria;
 mod fonte;
 mod historico;
 mod leitura;
+mod longa;
 mod modelos;
 mod protocolo;
 mod quedas;
@@ -11,6 +12,7 @@ use alarmes::Alarme;
 use fonte::Fonte;
 use historico::Historico;
 use leitura::{decodificar, status_nut, Brutos, Flags, InfoModelo, Medidas};
+use longa::SerieLonga;
 use quedas::Quedas;
 use rust_embed::RustEmbed;
 use serde::Serialize;
@@ -58,6 +60,10 @@ struct Config {
     bateria_instalada: Option<u64>,
     historico_pontos: usize,
     historico_intervalo_s: u64,
+    /// Arquivo da série longa (dias a semanas), de `NOBREAK_ARQUIVO_SERIE`.
+    arquivo_serie: Option<String>,
+    serie_dias: u64,
+    serie_intervalo_s: u64,
 }
 
 fn env(chave: &str, padrao: &str) -> String {
@@ -95,6 +101,13 @@ fn config() -> Config {
         historico_intervalo_s: env("NOBREAK_HISTORICO_INTERVALO_S", "60")
             .parse()
             .unwrap_or(60),
+        arquivo_serie: std::env::var("NOBREAK_ARQUIVO_SERIE")
+            .ok()
+            .filter(|v| !v.is_empty()),
+        serie_dias: env("NOBREAK_SERIE_DIAS", "30").parse().unwrap_or(30),
+        serie_intervalo_s: env("NOBREAK_SERIE_INTERVALO_S", "900")
+            .parse()
+            .unwrap_or(900),
     }
 }
 
@@ -171,6 +184,7 @@ fn coletor(
     estado: Arc<Mutex<Estado>>,
     hist: Arc<Mutex<Historico>>,
     quedas: Arc<Mutex<Quedas>>,
+    longa: Arc<Mutex<SerieLonga>>,
 ) {
     let mut fonte = if cfg.simular {
         Fonte::Simulada(0)
@@ -196,6 +210,20 @@ fn coletor(
                         gravar_arquivo(p, &txt);
                     }
                     if let (Some(m), Some(st)) = (&e.medidas, &e.status) {
+                        let fechado = longa.lock().unwrap().amostrar(
+                            agora(),
+                            [
+                                m.tensao_entrada_v,
+                                m.tensao_saida_v,
+                                m.carga_bateria_pct,
+                                m.tensao_bateria_v,
+                                m.carga_saida_pct,
+                                m.temperatura_c,
+                            ],
+                        );
+                        if let (Some(p), Some(b)) = (&cfg.arquivo_serie, fechado) {
+                            longa::anexar_arquivo(p, &b, longa.lock().unwrap().max_baldes());
+                        }
                         let mut q = quedas.lock().unwrap();
                         q.atualizar(
                             agora(),
@@ -348,6 +376,7 @@ fn servir(
     estado: &Arc<Mutex<Estado>>,
     hist: &Arc<Mutex<Historico>>,
     quedas: &Arc<Mutex<Quedas>>,
+    longa: &Arc<Mutex<SerieLonga>>,
     metodo: &Method,
     url: &str,
 ) -> Response<std::io::Cursor<Vec<u8>>> {
@@ -362,6 +391,7 @@ fn servir(
         ),
         "/api/eventos" => json(hist.lock().unwrap().eventos_json(), 200),
         "/api/historico" => json(hist.lock().unwrap().serie_json(), 200),
+        "/api/historico/longo" => json(longa.lock().unwrap().json(), 200),
         "/api/quedas" => {
             let q = quedas.lock().unwrap();
             let t = agora();
@@ -476,7 +506,15 @@ fn main() {
     if let Some(p) = &cfg.arquivo_quedas {
         quedas.lock().unwrap().restaurar(&quedas::ler_arquivo(p));
     }
+    let longa = Arc::new(Mutex::new(SerieLonga::nova(
+        cfg.serie_dias,
+        cfg.serie_intervalo_s,
+    )));
+    if let Some(p) = &cfg.arquivo_serie {
+        longa.lock().unwrap().restaurar(longa::ler_arquivo(p));
+    }
     {
+        let longa = longa.clone();
         let estado = estado.clone();
         let hist = hist.clone();
         let quedas = quedas.clone();
@@ -484,7 +522,7 @@ fn main() {
         std::thread::Builder::new()
             .name("coletor".into())
             .stack_size(256 * 1024)
-            .spawn(move || coletor(cfg_coletor, estado, hist, quedas))
+            .spawn(move || coletor(cfg_coletor, estado, hist, quedas, longa))
             .unwrap();
     }
     let servidor = Server::http(&escuta).unwrap_or_else(|e| {
@@ -492,7 +530,15 @@ fn main() {
         std::process::exit(1);
     });
     for req in servidor.incoming_requests() {
-        let resp = servir(&cfg, &estado, &hist, &quedas, req.method(), req.url());
+        let resp = servir(
+            &cfg,
+            &estado,
+            &hist,
+            &quedas,
+            &longa,
+            req.method(),
+            req.url(),
+        );
         let _ = req.respond(resp);
     }
 }

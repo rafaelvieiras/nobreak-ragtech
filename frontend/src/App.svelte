@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { buscarEstado, buscarEventos, buscarSerie, buscarQuedas, buscarBateria, type Saude, type Estado, type Eventos as TEventos, type Serie, type Quedas as TQuedas } from './api'
+  import { buscarEstado, buscarEventos, buscarSerie, buscarQuedas, buscarBateria, buscarSerieLonga, type SerieLonga, type Saude, type Estado, type Eventos as TEventos, type Serie, type Quedas as TQuedas } from './api'
   import Grafico from './Grafico.svelte'
   import Eventos from './Eventos.svelte'
   import Cartao from './Cartao.svelte'
@@ -14,13 +14,15 @@
   let serie = $state<Serie | null>(null)
   let quedas = $state<TQuedas | null>(null)
   let saude = $state<Saude | null>(null)
+  let longa = $state<SerieLonga | null>(null)
+  const col = (c: string) => (longa?.[c] as number[] | undefined) ?? []
 
   async function atualizar() {
     try { e = await buscarEstado(); falhaApi = null } catch (x) { falhaApi = String(x) }
     agora = Date.now()
   }
   async function atualizarHistorico() {
-    try { [ev, serie, quedas, saude] = await Promise.all([buscarEventos(), buscarSerie(), buscarQuedas(), buscarBateria()]) } catch { /* mantém o que já tem */ }
+    try { [ev, serie, quedas, saude, longa] = await Promise.all([buscarEventos(), buscarSerie(), buscarQuedas(), buscarBateria(), buscarSerieLonga()]) } catch { /* mantém o que já tem */ }
   }
   onMount(() => {
     atualizar(); atualizarHistorico()
@@ -105,13 +107,24 @@
   {/if}
 
   {#if serie}
-    <h2>Histórico (desde que o serviço iniciou)</h2>
+    <h2>Últimas 24 horas</h2>
     <div class="grade graficos">
       <Grafico titulo="Tensão da rede" t={serie.t} unidade=" V" min={0} series={[{ nome: 'entrada', cor: '#58a6ff', valores: serie.entrada_v }, { nome: 'saída', cor: '#3fb950', valores: serie.saida_v }]} />
       <Grafico titulo="Bateria" t={serie.t} unidade=" %" min={0} max={100} series={[{ nome: 'carga', cor: '#d29922', valores: serie.bateria_pct }]} />
       <Grafico titulo="Tensão da bateria" t={serie.t} unidade=" V" series={[{ nome: 'bateria', cor: '#bc8cff', valores: serie.bateria_v }]} />
       <Grafico titulo="Carga na saída" t={serie.t} unidade=" %" min={0} max={100} series={[{ nome: 'carga', cor: '#f0883e', valores: serie.carga_pct }]} />
       <Grafico titulo="Temperatura" t={serie.t} unidade=" °C" min={0} series={[{ nome: 'inversor', cor: '#f85149', valores: serie.temperatura_c }]} />
+    </div>
+  {/if}
+
+  {#if longa && longa.t.length > 1}
+    <h2>Últimos 30 dias (faixa = mínimo e máximo de cada {Math.round(longa.intervalo_s / 60)} min)</h2>
+    <div class="grade graficos">
+      <Grafico titulo="Tensão da rede" datas quebra={longa.intervalo_s * 3} t={longa.t} unidade=" V" min={0} faixa={{ cor: '#58a6ff', min: col('entrada_v_min'), max: col('entrada_v_max') }} series={[{ nome: 'média', cor: '#58a6ff', valores: col('entrada_v_media') }]} />
+      <Grafico titulo="Bateria" datas quebra={longa.intervalo_s * 3} t={longa.t} unidade=" %" min={0} max={100} faixa={{ cor: '#d29922', min: col('bateria_pct_min'), max: col('bateria_pct_max') }} series={[{ nome: 'média', cor: '#d29922', valores: col('bateria_pct_media') }]} />
+      <Grafico titulo="Tensão da bateria" datas quebra={longa.intervalo_s * 3} t={longa.t} unidade=" V" faixa={{ cor: '#bc8cff', min: col('bateria_v_min'), max: col('bateria_v_max') }} series={[{ nome: 'média', cor: '#bc8cff', valores: col('bateria_v_media') }]} />
+      <Grafico titulo="Carga na saída" datas quebra={longa.intervalo_s * 3} t={longa.t} unidade=" %" min={0} max={100} faixa={{ cor: '#f0883e', min: col('carga_pct_min'), max: col('carga_pct_max') }} series={[{ nome: 'média', cor: '#f0883e', valores: col('carga_pct_media') }]} />
+      <Grafico titulo="Temperatura" datas quebra={longa.intervalo_s * 3} t={longa.t} unidade=" °C" min={0} faixa={{ cor: '#f85149', min: col('temperatura_c_min'), max: col('temperatura_c_max') }} series={[{ nome: 'média', cor: '#f85149', valores: col('temperatura_c_media') }]} />
     </div>
   {/if}
 

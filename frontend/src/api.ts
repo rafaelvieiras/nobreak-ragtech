@@ -61,3 +61,9 @@ export interface Saude {
   ultima_queda: AnaliseQueda | null; autonomia_anterior_min: number | null; recarregando: boolean; avisos: AvisoBateria[]
 }
 export const buscarBateria = () => get<Saude>('/api/bateria')
+
+export interface SerieLonga {
+  intervalo_s: number; t: number[]
+  [coluna: string]: number | number[]
+}
+export const buscarSerieLonga = () => get<SerieLonga>('/api/historico/longo')

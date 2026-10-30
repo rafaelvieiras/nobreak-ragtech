@@ -15,9 +15,10 @@ ligado por USB num servidor, NAS ou Raspberry Pi, e o software oficial não roda
 - Painel web leve (Svelte, 43 KB), servido pelo próprio binário. Nada de banco de dados.
 - Binário estático em Rust. No Raspberry Pi 3 usa **menos de 2 MB de RAM**.
 - Imagem Docker de ~700 KB para `amd64`, `arm64`, `armv7` e `armv6`.
-- API JSON (`/api/estado`, `/api/eventos`, `/api/historico`, `/api/quedas`, `/api/bateria`) e métricas Prometheus (`/metrics`).
+- API JSON (`/api/estado`, `/api/eventos`, `/api/historico`, `/api/quedas`, `/api/bateria`, `/api/historico/longo`) e métricas Prometheus (`/metrics`).
 - **Alarmes com nome** (ausência de rede, fim de bateria, sobrecarga, sobretemperatura, falha do inversor...) e estado correto para o NUT (`OL`, `OB`, `LB`, `OVER`, `CHRG`).
 - **Resumo de quedas de energia** (24 h, 7 e 30 dias): quantidade, tempo na bateria, maior queda e bateria mínima. O começo de cada queda vai para o disco na hora, então uma queda que derruba o servidor não se perde.
+- **Histórico de 30 dias**: baldes de 15 min com média, mínimo e máximo de rede, bateria, carga e temperatura, gravados em arquivo. Sobrevive a reinício. O mínimo mostra quedas curtas que a média esconde.
 - **Saúde da bateria**: tensão em repouso, autonomia projetada e tensão afundando a cada queda, tempo de recarga, temperatura e idade. Gera avisos no painel e em `/api/bateria`.
 - **Contador regressivo de desligamento** do nobreak, quando ativo.
 - Gera o arquivo do driver `dummy-ups` do **NUT** (Network UPS Tools), então o Home Assistant e o `upsmon` continuam funcionando.
@@ -53,6 +54,9 @@ Sem Docker, baixe o binário em [Releases](../../releases) e rode `./nobreak-rag
 | `NOBREAK_ARQUIVO_EVENTOS` | vazio | Arquivo `.jsonl` para guardar o registro de mudanças entre reinícios (pasta com escrita) |
 | `NOBREAK_ARQUIVO_QUEDAS` | vazio | Arquivo `.jsonl` das quedas de energia (2 linhas por queda; pasta com escrita) |
 | `NOBREAK_BATERIA_INSTALADA` | vazio | Data da troca da bateria (`AAAA-MM-DD` ou `AAAA-MM`). Liga o aviso de idade (3 e 4 anos) |
+| `NOBREAK_ARQUIVO_SERIE` | vazio | Arquivo `.jsonl` da série longa (cerca de 190 bytes por balde, uns 550 KB em 30 dias). Sem ele, a série longa fica só na memória |
+| `NOBREAK_SERIE_DIAS` | `30` | Dias guardados na série longa |
+| `NOBREAK_SERIE_INTERVALO_S` | `900` | Segundos por balde da série longa |
 | `NOBREAK_HISTORICO_PONTOS` | `1440` | Pontos guardados nos gráficos (memória, ~50 bytes cada) |
 | `NOBREAK_HISTORICO_INTERVALO_S` | `60` | Segundos entre pontos dos gráficos |
 | `NOBREAK_SIMULAR` | `0` | `1` usa dados de exemplo, com uma queda de energia simulada a cada minuto (para testar o painel) |

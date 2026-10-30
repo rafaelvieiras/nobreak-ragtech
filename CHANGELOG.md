@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.0 (30/out/2026)
+- Histórico de 30 dias (`/api/historico/longo`, `backend/src/longa.rs`): baldes de 15 min com média, mínimo e máximo, gravados em `NOBREAK_ARQUIVO_SERIE`. O painel mostra os gráficos com faixa mín–máx e corta a linha onde o serviço ficou parado.
+- Novas variáveis `NOBREAK_ARQUIVO_SERIE`, `NOBREAK_SERIE_DIAS` e `NOBREAK_SERIE_INTERVALO_S`.
+
 ## 0.3.2 (30/out/2026)
 - Se o serviço reinicia durante a recarga, o tempo de recarga fica desconhecido em vez de contar a partir do reinício.
 
