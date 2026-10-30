@@ -1,0 +1,19 @@
+# Exemplo de uso. Ajuste a porta publicada e os grupos para o seu host.
+services:
+  nobreak:
+    image: ghcr.io/rafaelvieiras/nobreak-ragtech:latest
+    container_name: nobreak-ragtech
+    restart: unless-stopped
+    ports:
+      - "8088:8080"            # painel em http://IP-DO-HOST:8088
+    devices:
+      - /dev/ragtech:/dev/ragtech   # ou /dev/ttyACM0 (veja docs/instalacao.md)
+    # group_add: ["20"]        # grupo "dialout" do host, se a porta não for 0666
+    environment:
+      NOBREAK_PORTA: /dev/ragtech
+      NOBREAK_INTERVALO_S: "5"
+      # NOBREAK_FATOR_VBAT: "2"   # se a tensão da bateria aparecer pela metade
+    mem_limit: 32m
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
