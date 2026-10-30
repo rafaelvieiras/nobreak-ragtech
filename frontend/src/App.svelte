@@ -1,22 +1,24 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { buscarEstado, buscarEventos, buscarSerie, type Estado, type Eventos as TEventos, type Serie } from './api'
+  import { buscarEstado, buscarEventos, buscarSerie, buscarQuedas, type Estado, type Eventos as TEventos, type Serie, type Quedas as TQuedas } from './api'
   import Grafico from './Grafico.svelte'
   import Eventos from './Eventos.svelte'
   import Cartao from './Cartao.svelte'
+  import Quedas from './Quedas.svelte'
 
   let e = $state<Estado | null>(null)
   let falhaApi = $state<string | null>(null)
   let agora = $state(Date.now())
   let ev = $state<TEventos | null>(null)
   let serie = $state<Serie | null>(null)
+  let quedas = $state<TQuedas | null>(null)
 
   async function atualizar() {
     try { e = await buscarEstado(); falhaApi = null } catch (x) { falhaApi = String(x) }
     agora = Date.now()
   }
   async function atualizarHistorico() {
-    try { [ev, serie] = await Promise.all([buscarEventos(), buscarSerie()]) } catch { /* mantém o que já tem */ }
+    try { [ev, serie, quedas] = await Promise.all([buscarEventos(), buscarSerie(), buscarQuedas()]) } catch { /* mantém o que já tem */ }
   }
   onMount(() => {
     atualizar(); atualizarHistorico()
@@ -32,6 +34,7 @@
   let situacao = $derived.by(() => {
     if (falhaApi) return { cls: 'erro', txt: 'Sem resposta do serviço' }
     if (!e || !e.conectado) return { cls: 'erro', txt: 'Nobreak desconectado' }
+    if (e.alarmes?.some((a) => a.gravidade === 'erro')) return { cls: 'erro', txt: e.alarmes.find((a) => a.gravidade === 'erro')!.texto }
     if (e.status?.startsWith('OB')) return { cls: 'aviso', txt: 'Na bateria (falta de energia)' }
     if (e.status?.includes('CHRG')) return { cls: 'ok', txt: 'Rede normal, carregando bateria' }
     return { cls: 'ok', txt: 'Rede normal' }
@@ -55,6 +58,14 @@
     <div class="aviso-box erro-box">Não consegui falar com o serviço: {falhaApi}</div>
   {:else if e && !e.conectado}
     <div class="aviso-box erro-box">Sem leitura do nobreak. Último erro: {e.ultimo_erro ?? 'aguardando primeira leitura'}</div>
+  {/if}
+  {#if e?.alarmes?.length}
+    {#each e.alarmes as a}
+      <div class="aviso-box" class:erro-box={a.gravidade === 'erro'}>{a.gravidade === 'erro' ? '⚠' : '•'} {a.texto}</div>
+    {/each}
+  {/if}
+  {#if e?.medidas && e.medidas.contagem_regressiva_s > 0}
+    <div class="aviso-box">Contagem regressiva para desligar: {e.medidas.contagem_regressiva_s} s</div>
   {/if}
   {#if e?.modelo && !e.modelo.reconhecido}
     <div class="aviso-box">Modelo {e.modelo.indice} ainda não está na tabela. Os valores podem estar em escala errada. Abra uma issue com a linha “Registradores” abaixo.</div>
@@ -81,6 +92,11 @@
     </div>
   {/if}
 
+  {#if quedas}
+    <h2>Quedas de energia</h2>
+    <Quedas dados={quedas} />
+  {/if}
+
   {#if serie}
     <h2>Histórico (desde que o serviço iniciou)</h2>
     <div class="grade graficos">
@@ -93,7 +109,7 @@
   {/if}
 
   {#if e?.flags}
-    <h2>Flags (bits ainda em decodificação)</h2>
+    <h2>Flags (bytes crus)</h2>
     <div class="card">
       <table>
         <thead><tr><th>Registrador</th><th>End.</th><th>Hex</th><th>Bits (7→0)</th></tr></thead>
@@ -105,7 +121,7 @@
           {/each}
         </tbody>
       </table>
-      <div class="dica sub" style="margin-top:8px">Compare estes valores antes e depois de uma queda de energia e conte no repositório o que mudou.</div>
+      <div class="dica sub" style="margin-top:8px">Bits com nome aparecem como alarmes no topo. Os demais ainda não têm significado conhecido.</div>
     </div>
   {/if}
 

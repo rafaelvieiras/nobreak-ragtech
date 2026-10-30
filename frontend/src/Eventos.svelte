@@ -33,7 +33,7 @@
                 <td>{quando(e.t)}</td>
                 {#if e.tipo === 'registrador' && e.endereco !== null && e.de !== null && e.para !== null}
                   <td>{hex(e.endereco)} {nomes[e.endereco] ?? ''}</td>
-                  <td>{hex(e.de)} → {hex(e.para)} <span class="bits">{bin(e.de)} → {bin(e.para)}</span> <b>{bits(e.de, e.para)}</b></td>
+                  <td>{hex(e.de)} → {hex(e.para)} <span class="bits">{bin(e.de)} → {bin(e.para)}</span> <b>{bits(e.de, e.para)}</b>{#if e.texto} <span class="nome">{e.texto}</span>{/if}</td>
                 {:else if e.tipo === 'inicio'}
                   <td>início</td><td class="hex">{e.texto}</td>
                 {:else}
@@ -59,6 +59,7 @@
   .destaque td { color: var(--aviso); }
   .bits { color: var(--mudo); margin: 0 4px; letter-spacing: .08em; }
   b { color: var(--azul); font-weight: 600; }
+  .nome { color: var(--txt); margin-left: 6px; }
   .hex { word-break: break-all; color: var(--mudo); }
   td { white-space: nowrap; } td.hex { white-space: normal; }
 </style>

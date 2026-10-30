@@ -1,12 +1,16 @@
+mod alarmes;
 mod fonte;
 mod historico;
 mod leitura;
 mod modelos;
 mod protocolo;
+mod quedas;
 
+use alarmes::Alarme;
 use fonte::Fonte;
 use historico::Historico;
 use leitura::{decodificar, status_nut, Brutos, Flags, InfoModelo, Medidas};
+use quedas::Quedas;
 use rust_embed::RustEmbed;
 use serde::Serialize;
 use std::io::{Read, Write};
@@ -29,6 +33,8 @@ struct Estado {
     status: Option<String>,
     medidas: Option<Medidas>,
     flags: Option<Flags>,
+    /// Alarmes ligados agora (bits com significado conhecido).
+    alarmes: Vec<Alarme>,
     /// Registradores 0x80..=0x9D em hexadecimal, para engenharia reversa.
     registradores_hex: Option<String>,
     calibracao_0xf3: Option<u8>,
@@ -45,6 +51,7 @@ struct Config {
     arquivo_nut: Option<String>,
     fator_vbat: f32,
     arquivo_eventos: Option<String>,
+    arquivo_quedas: Option<String>,
     historico_pontos: usize,
     historico_intervalo_s: u64,
 }
@@ -74,6 +81,9 @@ fn config() -> Config {
         arquivo_eventos: std::env::var("NOBREAK_ARQUIVO_EVENTOS")
             .ok()
             .filter(|v| !v.is_empty()),
+        arquivo_quedas: std::env::var("NOBREAK_ARQUIVO_QUEDAS")
+            .ok()
+            .filter(|v| !v.is_empty()),
         historico_pontos: env("NOBREAK_HISTORICO_PONTOS", "1440")
             .parse()
             .unwrap_or(1440),
@@ -92,7 +102,8 @@ fn agora() -> u64 {
 
 fn aplicar(e: &mut Estado, b: &Brutos, fator_vbat: f32) {
     let (info, medidas, flags) = decodificar(b, fator_vbat);
-    e.status = Some(status_nut(&medidas).to_string());
+    e.status = Some(status_nut(&medidas, &flags));
+    e.alarmes = alarmes::ativos(&flags);
     e.registradores_hex = Some(b.bloco.iter().map(|x| format!("{x:02x}")).collect());
     e.calibracao_0xf3 = Some(b.calibracao);
     e.capacidade_0x136 = Some(b.cap_bateria);
@@ -121,7 +132,19 @@ fn arquivo_nut(e: &Estado) -> Option<String> {
             + &l("output.apower", format!("{pot:.1}"))
             + &l("ups.temperature", format!("{:.0}", m.temperatura_c))
             + &l("ups.load", format!("{:.0}", m.carga_saida_pct))
-            + &l("ups.status", s.clone()),
+            + &l("ups.status", s.clone())
+            + &if e.alarmes.is_empty() {
+                String::new()
+            } else {
+                l(
+                    "ups.alarm",
+                    e.alarmes
+                        .iter()
+                        .map(|a| a.texto)
+                        .collect::<Vec<_>>()
+                        .join("/"),
+                )
+            },
     )
 }
 
@@ -138,7 +161,12 @@ fn gravar_arquivo(caminho: &str, conteudo: &str) {
     }
 }
 
-fn coletor(cfg: Config, estado: Arc<Mutex<Estado>>, hist: Arc<Mutex<Historico>>) {
+fn coletor(
+    cfg: Config,
+    estado: Arc<Mutex<Estado>>,
+    hist: Arc<Mutex<Historico>>,
+    quedas: Arc<Mutex<Quedas>>,
+) {
     let mut fonte = if cfg.simular {
         Fonte::Simulada(0)
     } else {
@@ -161,6 +189,20 @@ fn coletor(cfg: Config, estado: Arc<Mutex<Estado>>, hist: Arc<Mutex<Historico>>)
                     }
                     if let (Some(p), Some(txt)) = (&cfg.arquivo_nut, arquivo_nut(&e)) {
                         gravar_arquivo(p, &txt);
+                    }
+                    if let (Some(m), Some(st)) = (&e.medidas, &e.status) {
+                        let mut q = quedas.lock().unwrap();
+                        q.atualizar(
+                            agora(),
+                            st.starts_with("OB"),
+                            m.carga_bateria_pct,
+                            m.tensao_entrada_v,
+                        );
+                        if let Some(p) = &cfg.arquivo_quedas {
+                            quedas::anexar_arquivo(p, &q.drenar());
+                        } else {
+                            q.drenar();
+                        }
                     }
                 }
                 Err(msg) => {
@@ -189,7 +231,7 @@ fn json(corpo: String, codigo: u16) -> Response<std::io::Cursor<Vec<u8>>> {
         .with_header(Header::from_bytes("Cache-Control", "no-store").unwrap())
 }
 
-fn metricas(e: &Estado) -> String {
+fn metricas(e: &Estado, q: &Quedas) -> String {
     let mut s = String::new();
     let mut g = |nome: &str, ajuda: &str, v: f64| {
         s += &format!(
@@ -224,13 +266,42 @@ fn metricas(e: &Estado) -> String {
             "temperatura do inversor",
             m.temperatura_c as f64,
         );
+        g(
+            "contagem_regressiva_segundos",
+            "contador regressivo de desligamento (0 = parado)",
+            m.contagem_regressiva_s as f64,
+        );
     }
+    if let Some(st) = &e.status {
+        g(
+            "em_bateria",
+            "1 se o nobreak está na bateria (sem rede)",
+            if st.starts_with("OB") { 1.0 } else { 0.0 },
+        );
+    }
+    g(
+        "alarmes_ativos",
+        "quantidade de alarmes ligados agora",
+        e.alarmes.len() as f64,
+    );
+    let r = q.resumo(agora(), 86_400);
+    g(
+        "quedas_24h",
+        "quedas de energia nas últimas 24 h",
+        r.quedas as f64,
+    );
+    g(
+        "segundos_em_bateria_24h",
+        "tempo na bateria nas últimas 24 h",
+        r.segundos_em_bateria as f64,
+    );
     s
 }
 
 fn servir(
     estado: &Arc<Mutex<Estado>>,
     hist: &Arc<Mutex<Historico>>,
+    quedas: &Arc<Mutex<Quedas>>,
     metodo: &Method,
     url: &str,
 ) -> Response<std::io::Cursor<Vec<u8>>> {
@@ -245,6 +316,21 @@ fn servir(
         ),
         "/api/eventos" => json(hist.lock().unwrap().eventos_json(), 200),
         "/api/historico" => json(hist.lock().unwrap().serie_json(), 200),
+        "/api/quedas" => {
+            let q = quedas.lock().unwrap();
+            let t = agora();
+            json(
+                serde_json::json!({
+                    "em_curso": q.em_curso(),
+                    "ultimas_24h": q.resumo(t, 86_400),
+                    "ultimos_7_dias": q.resumo(t, 7 * 86_400),
+                    "ultimos_30_dias": q.resumo(t, 30 * 86_400),
+                    "lista": q.lista_json(t),
+                })
+                .to_string(),
+                200,
+            )
+        }
         "/api/saude" => {
             let e = estado.lock().unwrap();
             let obsoleto = e
@@ -254,8 +340,12 @@ fn servir(
             let ok = e.conectado && !obsoleto;
             json(format!("{{\"ok\":{ok}}}"), if ok { 200 } else { 503 })
         }
-        "/metrics" => Response::from_string(metricas(&estado.lock().unwrap()))
-            .with_header(Header::from_bytes("Content-Type", "text/plain; version=0.0.4").unwrap()),
+        "/metrics" => {
+            Response::from_string(metricas(&estado.lock().unwrap(), &quedas.lock().unwrap()))
+                .with_header(
+                    Header::from_bytes("Content-Type", "text/plain; version=0.0.4").unwrap(),
+                )
+        }
         _ => {
             let nome = caminho.trim_start_matches('/');
             let nome = if nome.is_empty() { "index.html" } else { nome };
@@ -321,13 +411,18 @@ fn main() {
     if let Some(p) = &cfg.arquivo_eventos {
         hist.lock().unwrap().restaurar(historico::ler_arquivo(p));
     }
+    let quedas = Arc::new(Mutex::new(Quedas::default()));
+    if let Some(p) = &cfg.arquivo_quedas {
+        quedas.lock().unwrap().restaurar(&quedas::ler_arquivo(p));
+    }
     {
         let estado = estado.clone();
         let hist = hist.clone();
+        let quedas = quedas.clone();
         std::thread::Builder::new()
             .name("coletor".into())
             .stack_size(256 * 1024)
-            .spawn(move || coletor(cfg, estado, hist))
+            .spawn(move || coletor(cfg, estado, hist, quedas))
             .unwrap();
     }
     let servidor = Server::http(&escuta).unwrap_or_else(|e| {
@@ -335,7 +430,7 @@ fn main() {
         std::process::exit(1);
     });
     for req in servidor.incoming_requests() {
-        let resp = servir(&estado, &hist, req.method(), req.url());
+        let resp = servir(&estado, &hist, &quedas, req.method(), req.url());
         let _ = req.respond(resp);
     }
 }

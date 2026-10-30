@@ -157,7 +157,7 @@ impl Historico {
                             Some(*a),
                             Some(*antes),
                             Some(*agora),
-                            None,
+                            crate::alarmes::descrever_mudanca(*a, *antes, *agora),
                         ));
                     }
                 }

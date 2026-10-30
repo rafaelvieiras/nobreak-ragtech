@@ -61,7 +61,9 @@ docker run ... --user 1000:1000 \
   ghcr.io/rafaelvieiras/nobreak-ragtech:latest
 ```
 
-O arquivo guarda no máximo ~128 KB (os eventos mais antigos são descartados).
+Para guardar também as quedas de energia (resumo de 24 h, 7 e 30 dias), use `-e NOBREAK_ARQUIVO_QUEDAS=/dados/quedas.jsonl` na mesma pasta.
+
+O arquivo de eventos guarda no máximo ~128 KB (os eventos mais antigos são descartados).
 
 ## Binário sem Docker
 

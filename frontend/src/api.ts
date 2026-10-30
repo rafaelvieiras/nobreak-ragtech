@@ -2,13 +2,15 @@ export interface Medidas {
   carga_bateria_pct: number; tensao_bateria_v: number
   tensao_entrada_v: number; tensao_saida_v: number; corrente_saida_a: number
   carga_saida_pct: number; temperatura_c: number; frequencia_hz: number | null; firmware: number
+  contagem_regressiva_s: number
 }
 export interface Flags { nvolatil: number; eventos: number; falhas: number; usuario: number; gerais2: number }
+export interface Alarme { codigo: string; texto: string; gravidade: 'info' | 'aviso' | 'erro'; registrador: number; mascara: number }
 export interface Estado {
   conectado: boolean; ultimo_erro: string | null; atualizado_em: number | null
   falhas_seguidas: number; leituras_ok: number
   modelo: { indice: number; nome: string; reconhecido: boolean } | null
-  status: string | null; medidas: Medidas | null; flags: Flags | null
+  status: string | null; medidas: Medidas | null; flags: Flags | null; alarmes: Alarme[]
   registradores_hex: string | null; calibracao_0xf3: number | null; capacidade_0x136: number | null; osc_0x202: [number, number] | null
 }
 
@@ -37,3 +39,13 @@ async function get<T>(url: string): Promise<T> {
 }
 export const buscarEventos = () => get<Eventos>('/api/eventos')
 export const buscarSerie = () => get<Serie>('/api/historico')
+
+export interface Queda {
+  inicio: number; fim: number | null; duracao_s: number | null
+  bateria_inicio_pct: number; bateria_min_pct: number; entrada_min_v: number; interrompida: boolean
+}
+export interface ResumoQuedas { quedas: number; segundos_em_bateria: number; maior_s: number; bateria_min_pct: number | null; interrompidas: number }
+export interface Quedas {
+  em_curso: boolean; ultimas_24h: ResumoQuedas; ultimos_7_dias: ResumoQuedas; ultimos_30_dias: ResumoQuedas; lista: Queda[]
+}
+export const buscarQuedas = () => get<Quedas>('/api/quedas')

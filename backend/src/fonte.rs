@@ -97,8 +97,11 @@ fn simulado(n: u32) -> Brutos {
     bloco[0x8B - 0x80] = bloco[0x8B - 0x80].wrapping_add((n % 3) as u8);
     if queda {
         bloco[0x8B - 0x80] = 0; // sem rede
-        bloco[0x90 - 0x80] |= 0x01;
-        bloco[0x91 - 0x80] |= 0x04;
+        bloco[0x90 - 0x80] |= 0x48; // sem rede + bit 6 (visto nas quedas reais)
+        bloco[0x92 - 0x80] &= !0x01;
+        if fase >= 38 {
+            bloco[0x91 - 0x80] |= 0x01; // bateria baixa no fim da queda
+        }
         bloco[0x87 - 0x80] = bloco[0x87 - 0x80].saturating_sub(((fase - 30) * 2) as u8);
     } else if fase >= 42 {
         bloco[0] |= 0x02; // marca que houve queda

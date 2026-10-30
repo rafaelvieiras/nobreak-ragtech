@@ -15,7 +15,10 @@ ligado por USB num servidor, NAS ou Raspberry Pi, e o software oficial não roda
 - Painel web leve (Svelte, 43 KB), servido pelo próprio binário. Nada de banco de dados.
 - Binário estático em Rust. No Raspberry Pi 3 usa **menos de 2 MB de RAM**.
 - Imagem Docker de ~700 KB para `amd64`, `arm64`, `armv7` e `armv6`.
-- API JSON (`/api/estado`, `/api/eventos`, `/api/historico`) e métricas Prometheus (`/metrics`).
+- API JSON (`/api/estado`, `/api/eventos`, `/api/historico`, `/api/quedas`) e métricas Prometheus (`/metrics`).
+- **Alarmes com nome** (ausência de rede, fim de bateria, sobrecarga, sobretemperatura, falha do inversor...) e estado correto para o NUT (`OL`, `OB`, `LB`, `OVER`, `CHRG`).
+- **Resumo de quedas de energia** (24 h, 7 e 30 dias): quantidade, tempo na bateria, maior queda e bateria mínima. O começo de cada queda vai para o disco na hora, então uma queda que derruba o servidor não se perde.
+- **Contador regressivo de desligamento** do nobreak, quando ativo.
 - Gera o arquivo do driver `dummy-ups` do **NUT** (Network UPS Tools), então o Home Assistant e o `upsmon` continuam funcionando.
 - Mostra os registradores crus, para ajudar a decodificar o que ainda falta.
 - **Registro de mudanças:** cada alteração de bit em registradores de estado (EVENTOS, FALHAS, USUARIO, NVOLATIL...) vira uma linha com data, tensão da rede e bateria. É a forma mais fácil de descobrir o que cada bit significa numa queda de energia.
@@ -47,6 +50,7 @@ Sem Docker, baixe o binário em [Releases](../../releases) e rode `./nobreak-rag
 | `NOBREAK_FATOR_VBAT` | `1` | Multiplica a tensão da bateria. Use `2` se o valor aparecer pela metade do medido |
 | `NOBREAK_ARQUIVO_NUT` | vazio | Caminho do arquivo para o `dummy-ups` do NUT |
 | `NOBREAK_ARQUIVO_EVENTOS` | vazio | Arquivo `.jsonl` para guardar o registro de mudanças entre reinícios (pasta com escrita) |
+| `NOBREAK_ARQUIVO_QUEDAS` | vazio | Arquivo `.jsonl` das quedas de energia (2 linhas por queda; pasta com escrita) |
 | `NOBREAK_HISTORICO_PONTOS` | `1440` | Pontos guardados nos gráficos (memória, ~50 bytes cada) |
 | `NOBREAK_HISTORICO_INTERVALO_S` | `60` | Segundos entre pontos dos gráficos |
 | `NOBREAK_SIMULAR` | `0` | `1` usa dados de exemplo, com uma queda de energia simulada a cada minuto (para testar o painel) |
@@ -75,8 +79,8 @@ Tem outro modelo? Abra uma issue com:
 2. A linha **Registradores** do painel (ou `curl localhost:8088/api/estado`).
 3. Se os valores batem com o display do nobreak.
 
-Tem também as flags `EVENTOS`, `FALHAS` e `USUARIO`, que ainda não têm significado conhecido. Se você
-puder comparar o painel antes e depois de uma queda de energia, isso ajuda muito.
+Os bits de `EVENTOS`, `FALHAS` e `USUARIO` já têm nome (veja `docs/protocolo.md`), mas alguns ainda são lacunas. Se você
+puder comparar o painel antes e depois de uma queda de energia, isso ajuda muito, sobretudo uma queda que esgote a bateria.
 
 ## Desenvolvimento
 

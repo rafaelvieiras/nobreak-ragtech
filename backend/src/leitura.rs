@@ -44,6 +44,8 @@ pub struct Medidas {
     pub temperatura_c: f32,
     pub frequencia_hz: Option<f32>,
     pub firmware: f32,
+    /// Contador regressivo de desligamento (registrador `0x98`), em segundos. `0` = parado.
+    pub contagem_regressiva_s: u8,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -84,6 +86,7 @@ pub fn decodificar(b: &Brutos, fator_vbat: f32) -> (InfoModelo, Medidas, Flags) 
         temperatura_c: b.reg(0x8E) as f32,
         frequencia_hz: freq,
         firmware: b.reg(0x9B) as f32 * 0.1,
+        contagem_regressiva_s: b.reg(0x98),
     };
     let info = InfoModelo {
         indice: idx,
@@ -102,16 +105,21 @@ pub fn decodificar(b: &Brutos, fator_vbat: f32) -> (InfoModelo, Medidas, Flags) 
     (info, medidas, flags)
 }
 
-/// Estado em notação NUT. **Heurística** até os bits de EVENTOS/FALHAS serem
-/// decodificados: considera "em bateria" quando a tensão de entrada some.
-pub fn status_nut(m: &Medidas) -> &'static str {
-    if m.tensao_entrada_v < 80.0 {
-        "OB"
-    } else if m.carga_bateria_pct < 99.0 {
-        "OL CHRG"
-    } else {
-        "OL"
+/// Estado em notação NUT, a partir dos bits conhecidos (ver `alarmes.rs`).
+/// `OB` quando o bit "ausência de rede" liga; a tensão de entrada baixa serve de reforço.
+pub fn status_nut(m: &Medidas, f: &Flags) -> String {
+    let sem_rede = f.eventos & 0x08 != 0 || m.tensao_entrada_v < 80.0;
+    let mut s: Vec<&str> = vec![if sem_rede { "OB" } else { "OL" }];
+    if f.falhas & 0x05 != 0 {
+        s.push("LB"); // bateria baixa (bit 0) ou fim de bateria (bit 2)
     }
+    if f.falhas & 0x08 != 0 {
+        s.push("OVER");
+    }
+    if !sem_rede && m.carga_bateria_pct < 99.0 {
+        s.push("CHRG");
+    }
+    s.join(" ")
 }
 
 #[cfg(test)]
@@ -163,9 +171,30 @@ mod testes {
 
     #[test]
     fn status() {
-        let (_, mut m, _) = decodificar(&captura(), 1.0);
-        assert_eq!(status_nut(&m), "OL");
-        m.tensao_entrada_v = 0.0;
-        assert_eq!(status_nut(&m), "OB");
+        let (_, mut m, mut f) = decodificar(&captura(), 1.0);
+        assert_eq!(status_nut(&m, &f), "OL");
+        m.carga_bateria_pct = 84.0;
+        assert_eq!(status_nut(&m, &f), "OL CHRG");
+        // queda real: rede some e o bit 3 de EVENTOS liga (visto em 30/out/2026)
+        m.tensao_entrada_v = 7.0;
+        f.eventos = 0x48;
+        assert_eq!(status_nut(&m, &f), "OB");
+        // o bit sozinho basta, mesmo com a tensão ainda alta
+        m.tensao_entrada_v = 100.0;
+        assert_eq!(status_nut(&m, &f), "OB");
+        f.eventos = 0;
+        f.falhas = 0x04;
+        assert_eq!(status_nut(&m, &f), "OL LB CHRG"); // bateria ainda em 84%
+        m.carga_bateria_pct = 100.0;
+        assert_eq!(status_nut(&m, &f), "OL LB");
+        f.falhas = 0x08;
+        assert_eq!(status_nut(&m, &f), "OL OVER");
+    }
+
+    #[test]
+    fn contador_regressivo() {
+        let mut b = captura();
+        b.bloco[0x98 - 0x80] = 42;
+        assert_eq!(decodificar(&b, 1.0).1.contagem_regressiva_s, 42);
     }
 }
