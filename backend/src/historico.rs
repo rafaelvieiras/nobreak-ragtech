@@ -29,6 +29,24 @@ pub struct Evento {
     pub bateria_pct: f32,
 }
 
+impl Evento {
+    /// Eventos que explicam uma queda ou um defeito: início, estado, conexão e bits com nome.
+    /// Mudanças de registrador sem nome conhecido são só material de pesquisa e saem primeiro.
+    fn importante(&self) -> bool {
+        self.tipo != "registrador" || self.texto.is_some()
+    }
+}
+
+/// Reduz a lista a `max` eventos, descartando primeiro os mais antigos sem importância.
+fn aparar(v: &mut VecDeque<Evento>, max: usize) {
+    while v.len() > max {
+        match v.iter().position(|e| !e.importante()) {
+            Some(i) => v.remove(i),
+            None => v.pop_front(),
+        };
+    }
+}
+
 #[derive(Serialize, Clone, Debug, Default)]
 pub struct Contagem {
     pub mudancas: u32,
@@ -107,10 +125,8 @@ impl Historico {
     }
 
     fn empurrar(&mut self, e: Evento) {
-        if self.eventos.len() >= MAX_EVENTOS {
-            self.eventos.pop_front();
-        }
         self.eventos.push_back(e);
+        aparar(&mut self.eventos, MAX_EVENTOS);
     }
 
     /// Registra a leitura. Devolve os eventos novos (para espelhar no arquivo).
@@ -274,16 +290,14 @@ impl Historico {
 /// arquivo (bloco de bytes nulos sem `\n`, que cola no próximo evento) e linhas truncadas.
 fn eventos_do_texto(bytes: &[u8]) -> Vec<Evento> {
     let txt = String::from_utf8_lossy(bytes);
-    let mut v: Vec<Evento> = txt
+    let mut v: VecDeque<Evento> = txt
         .split('\n')
         .filter_map(|l| {
             serde_json::from_str(l.trim_matches(|c: char| c == '\0' || c.is_whitespace())).ok()
         })
         .collect();
-    if v.len() > MAX_EVENTOS {
-        v.drain(..v.len() - MAX_EVENTOS);
-    }
-    v
+    aparar(&mut v, MAX_EVENTOS);
+    v.into()
 }
 
 /// Lê o arquivo de eventos e o reescreve limpo (sem bytes nulos nem linhas quebradas).
@@ -311,8 +325,9 @@ pub fn anexar_arquivo(caminho: &str, novos: &[Evento]) {
         .map(|m| m.len() > 128 * 1024)
         .unwrap_or(false);
     if grande {
-        let mut v = ler_arquivo(caminho);
-        v.extend_from_slice(novos);
+        let mut v: VecDeque<Evento> = ler_arquivo(caminho).into();
+        v.extend(novos.iter().cloned());
+        aparar(&mut v, MAX_EVENTOS);
         let txt: String = v
             .iter()
             .filter_map(|e| serde_json::to_string(e).ok())
@@ -466,6 +481,42 @@ mod testes {
         assert!(!depois.contains(&0));
         assert_eq!(depois.iter().filter(|c| **c == b'\n').count(), 3);
         let _ = std::fs::remove_file(p);
+    }
+
+    fn ev(t: u64, tipo: &str, texto: Option<&str>) -> Evento {
+        Evento {
+            t,
+            tipo: tipo.into(),
+            endereco: Some(0x93),
+            de: Some(0),
+            para: Some(1),
+            texto: texto.map(String::from),
+            entrada_v: 0.0,
+            bateria_v: 0.0,
+            bateria_pct: 0.0,
+        }
+    }
+
+    #[test]
+    fn ruido_sai_antes_dos_eventos_importantes() {
+        let mut v: VecDeque<Evento> = VecDeque::new();
+        v.push_back(ev(1, "status", Some("OL → OB"))); // o mais antigo, mas importante
+        v.push_back(ev(2, "registrador", Some("+ Ausência de rede elétrica")));
+        for t in 3..20 {
+            v.push_back(ev(t, "registrador", None));
+        }
+        aparar(&mut v, 5);
+        assert_eq!(v.len(), 5);
+        assert_eq!(v[0].t, 1);
+        assert_eq!(v[1].t, 2);
+        assert_eq!(v[4].t, 19); // sobram os 3 ruídos mais recentes
+    }
+
+    #[test]
+    fn so_importantes_cai_o_mais_antigo() {
+        let mut v: VecDeque<Evento> = (1..=6).map(|t| ev(t, "status", Some("x"))).collect();
+        aparar(&mut v, 4);
+        assert_eq!(v.front().map(|e| e.t), Some(3));
     }
 
     #[test]
