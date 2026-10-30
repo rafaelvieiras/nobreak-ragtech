@@ -24,3 +24,5 @@ td,th { padding:5px 10px; border-bottom:1px solid var(--borda); text-align:left;
 .hex { word-break:break-all; font-family:ui-monospace,monospace; font-size:13px; color:var(--mudo); }
 footer { margin-top:36px; color:var(--mudo); font-size:12px; }
 a { color:var(--azul); }
+.graficos { grid-template-columns:repeat(auto-fill,minmax(420px,1fr)); }
+@media (max-width:480px){ .graficos { grid-template-columns:1fr; } }

@@ -84,13 +84,25 @@ fn ler(p: &mut dyn serialport::SerialPort, id: u8, end: u16, n: u8) -> Result<Ve
         .map_err(|e| e.to_string())
 }
 
+/// Simulador: a cada 60 ciclos, 12 ciclos de queda de energia (rede some, bateria desce,
+/// bits de EVENTOS/FALHAS acendem e o NVOLATIL fica marcado depois). Só para testar o painel.
 fn simulado(n: u32) -> Brutos {
     let hex = "09000c71027dc9ff00d1c576020231ac00000186c201a2320076060c00cf";
     let mut bloco = [0u8; TAM_BLOCO];
     for (i, b) in bloco.iter_mut().enumerate() {
         *b = u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).unwrap();
     }
+    let fase = n % 60;
+    let queda = (30..42).contains(&fase);
     bloco[0x8B - 0x80] = bloco[0x8B - 0x80].wrapping_add((n % 3) as u8);
+    if queda {
+        bloco[0x8B - 0x80] = 0; // sem rede
+        bloco[0x90 - 0x80] |= 0x01;
+        bloco[0x91 - 0x80] |= 0x04;
+        bloco[0x87 - 0x80] = bloco[0x87 - 0x80].saturating_sub(((fase - 30) * 2) as u8);
+    } else if fase >= 42 {
+        bloco[0] |= 0x02; // marca que houve queda
+    }
     Brutos {
         bloco,
         calibracao: 0x34,

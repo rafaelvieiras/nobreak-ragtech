@@ -87,3 +87,9 @@ Se você quiser ajudar, veja `CONTRIBUTING.md`.
 
 Ao conectar, ele marca "software presente" em `USUARIO` (OR `0x02`) e ao sair desmarca (AND `0xFD`). Isso sugere que o
 firmware muda de comportamento quando há software ligado. Este projeto **não** faz isso por enquanto.
+
+## Como descobrir o significado dos bits (somente leitura)
+
+Deixe o serviço rodando com `NOBREAK_ARQUIVO_EVENTOS` e provoque uma queda curta (tire o nobreak da tomada por 1 minuto, com pouca carga).
+A tabela **Eventos e mudanças de bits** do painel mostra, em ordem, quais bits ligaram (`+bitN`) e desligaram (`−bitN`), a tensão da rede
+e a bateria naquele instante. Abra uma issue com essa tabela e o modelo do nobreak.

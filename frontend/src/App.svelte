@@ -1,17 +1,28 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { buscarEstado, type Estado } from './api'
+  import { buscarEstado, buscarEventos, buscarSerie, type Estado, type Eventos as TEventos, type Serie } from './api'
+  import Grafico from './Grafico.svelte'
+  import Eventos from './Eventos.svelte'
   import Cartao from './Cartao.svelte'
 
   let e = $state<Estado | null>(null)
   let falhaApi = $state<string | null>(null)
   let agora = $state(Date.now())
+  let ev = $state<TEventos | null>(null)
+  let serie = $state<Serie | null>(null)
 
   async function atualizar() {
     try { e = await buscarEstado(); falhaApi = null } catch (x) { falhaApi = String(x) }
     agora = Date.now()
   }
-  onMount(() => { atualizar(); const t = setInterval(atualizar, 3000); return () => clearInterval(t) })
+  async function atualizarHistorico() {
+    try { [ev, serie] = await Promise.all([buscarEventos(), buscarSerie()]) } catch { /* mantém o que já tem */ }
+  }
+  onMount(() => {
+    atualizar(); atualizarHistorico()
+    const a = setInterval(atualizar, 3000), b = setInterval(atualizarHistorico, 15000)
+    return () => { clearInterval(a); clearInterval(b) }
+  })
 
   const f = (n: number | null | undefined, d = 1) => (n === null || n === undefined ? '—' : n.toFixed(d))
   const bin = (n: number) => n.toString(2).padStart(8, '0')
@@ -70,6 +81,17 @@
     </div>
   {/if}
 
+  {#if serie}
+    <h2>Histórico (desde que o serviço iniciou)</h2>
+    <div class="grade graficos">
+      <Grafico titulo="Tensão da rede" t={serie.t} unidade=" V" min={0} series={[{ nome: 'entrada', cor: '#58a6ff', valores: serie.entrada_v }, { nome: 'saída', cor: '#3fb950', valores: serie.saida_v }]} />
+      <Grafico titulo="Bateria" t={serie.t} unidade=" %" min={0} max={100} series={[{ nome: 'carga', cor: '#d29922', valores: serie.bateria_pct }]} />
+      <Grafico titulo="Tensão da bateria" t={serie.t} unidade=" V" series={[{ nome: 'bateria', cor: '#bc8cff', valores: serie.bateria_v }]} />
+      <Grafico titulo="Carga na saída" t={serie.t} unidade=" %" min={0} max={100} series={[{ nome: 'carga', cor: '#f0883e', valores: serie.carga_pct }]} />
+      <Grafico titulo="Temperatura" t={serie.t} unidade=" °C" min={0} series={[{ nome: 'inversor', cor: '#f85149', valores: serie.temperatura_c }]} />
+    </div>
+  {/if}
+
   {#if e?.flags}
     <h2>Flags (bits ainda em decodificação)</h2>
     <div class="card">
@@ -85,6 +107,11 @@
       </table>
       <div class="dica sub" style="margin-top:8px">Compare estes valores antes e depois de uma queda de energia e conte no repositório o que mudou.</div>
     </div>
+  {/if}
+
+  {#if ev}
+    <h2>Eventos e mudanças de bits</h2>
+    <Eventos dados={ev} />
   {/if}
 
   {#if e?.registradores_hex}

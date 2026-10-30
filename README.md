@@ -15,9 +15,11 @@ ligado por USB num servidor, NAS ou Raspberry Pi, e o software oficial não roda
 - Painel web leve (Svelte, 43 KB), servido pelo próprio binário. Nada de banco de dados.
 - Binário estático em Rust. No Raspberry Pi 3 usa **menos de 2 MB de RAM**.
 - Imagem Docker de ~700 KB para `amd64`, `arm64`, `armv7` e `armv6`.
-- API JSON (`/api/estado`) e métricas Prometheus (`/metrics`).
+- API JSON (`/api/estado`, `/api/eventos`, `/api/historico`) e métricas Prometheus (`/metrics`).
 - Gera o arquivo do driver `dummy-ups` do **NUT** (Network UPS Tools), então o Home Assistant e o `upsmon` continuam funcionando.
 - Mostra os registradores crus, para ajudar a decodificar o que ainda falta.
+- **Registro de mudanças:** cada alteração de bit em registradores de estado (EVENTOS, FALHAS, USUARIO, NVOLATIL...) vira uma linha com data, tensão da rede e bateria. É a forma mais fácil de descobrir o que cada bit significa numa queda de energia.
+- **Gráficos** de rede, bateria, carga e temperatura, em SVG puro, guardados em memória (24 h por padrão).
 
 ## Instalação rápida (Docker)
 
@@ -44,7 +46,10 @@ Sem Docker, baixe o binário em [Releases](../../releases) e rode `./nobreak-rag
 | `NOBREAK_ID` | `A` | Nibble de endereço do quadro (hex). O padrão serve para a maioria |
 | `NOBREAK_FATOR_VBAT` | `1` | Multiplica a tensão da bateria. Use `2` se o valor aparecer pela metade do medido |
 | `NOBREAK_ARQUIVO_NUT` | vazio | Caminho do arquivo para o `dummy-ups` do NUT |
-| `NOBREAK_SIMULAR` | `0` | `1` usa dados de exemplo, sem nobreak (para testar o painel) |
+| `NOBREAK_ARQUIVO_EVENTOS` | vazio | Arquivo `.jsonl` para guardar o registro de mudanças entre reinícios (pasta com escrita) |
+| `NOBREAK_HISTORICO_PONTOS` | `1440` | Pontos guardados nos gráficos (memória, ~50 bytes cada) |
+| `NOBREAK_HISTORICO_INTERVALO_S` | `60` | Segundos entre pontos dos gráficos |
+| `NOBREAK_SIMULAR` | `0` | `1` usa dados de exemplo, com uma queda de energia simulada a cada minuto (para testar o painel) |
 
 ## Modelos
 

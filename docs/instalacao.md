@@ -49,6 +49,20 @@ Campos gravados: `battery.charge`, `battery.voltage`, `input.voltage`, `output.v
 > `ups.status` é uma **estimativa** (`OL`, `OL CHRG` ou `OB`) enquanto os bits de EVENTOS e FALHAS não estão decodificados.
 > Não use para desligar o servidor em queda de energia sem testar puxando o cabo.
 
+## Guardar o registro de eventos entre reinícios
+
+Os gráficos ficam só em memória. O registro de mudanças de bits pode ir para um arquivo (útil para estudar uma queda de energia
+depois que o serviço reiniciou). A pasta precisa aceitar escrita pelo usuário do container:
+
+```bash
+sudo install -d -o 1000 -g 1000 /var/lib/nobreak-ragtech
+docker run ... --user 1000:1000 \
+  -v /var/lib/nobreak-ragtech:/dados -e NOBREAK_ARQUIVO_EVENTOS=/dados/eventos.jsonl \
+  ghcr.io/rafaelvieiras/nobreak-ragtech:latest
+```
+
+O arquivo guarda no máximo ~128 KB (os eventos mais antigos são descartados).
+
 ## Binário sem Docker
 
 Baixe o `.tar.gz` da sua arquitetura em [Releases](../../releases), confira o `SHA256SUMS` e rode:

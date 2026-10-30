@@ -1,9 +1,11 @@
 mod fonte;
+mod historico;
 mod leitura;
 mod modelos;
 mod protocolo;
 
 use fonte::Fonte;
+use historico::Historico;
 use leitura::{decodificar, status_nut, Brutos, Flags, InfoModelo, Medidas};
 use rust_embed::RustEmbed;
 use serde::Serialize;
@@ -42,6 +44,9 @@ struct Config {
     simular: bool,
     arquivo_nut: Option<String>,
     fator_vbat: f32,
+    arquivo_eventos: Option<String>,
+    historico_pontos: usize,
+    historico_intervalo_s: u64,
 }
 
 fn env(chave: &str, padrao: &str) -> String {
@@ -66,6 +71,15 @@ fn config() -> Config {
             .replace(',', ".")
             .parse()
             .unwrap_or(1.0),
+        arquivo_eventos: std::env::var("NOBREAK_ARQUIVO_EVENTOS")
+            .ok()
+            .filter(|v| !v.is_empty()),
+        historico_pontos: env("NOBREAK_HISTORICO_PONTOS", "1440")
+            .parse()
+            .unwrap_or(1440),
+        historico_intervalo_s: env("NOBREAK_HISTORICO_INTERVALO_S", "60")
+            .parse()
+            .unwrap_or(60),
     }
 }
 
@@ -124,7 +138,7 @@ fn gravar_arquivo(caminho: &str, conteudo: &str) {
     }
 }
 
-fn coletor(cfg: Config, estado: Arc<Mutex<Estado>>) {
+fn coletor(cfg: Config, estado: Arc<Mutex<Estado>>, hist: Arc<Mutex<Historico>>) {
     let mut fonte = if cfg.simular {
         Fonte::Simulada(0)
     } else {
@@ -134,9 +148,17 @@ fn coletor(cfg: Config, estado: Arc<Mutex<Estado>>) {
         let r = fonte.ler_tudo();
         {
             let mut e = estado.lock().unwrap();
+            let mut novos = Vec::new();
             match r {
                 Ok(b) => {
                     aplicar(&mut e, &b, cfg.fator_vbat);
+                    {
+                        let mut h = hist.lock().unwrap();
+                        novos.extend(h.conexao(agora(), true, ""));
+                        if let (Some(m), Some(st)) = (&e.medidas, &e.status) {
+                            novos.extend(h.registrar(agora(), &b, m, st));
+                        }
+                    }
                     if let (Some(p), Some(txt)) = (&cfg.arquivo_nut, arquivo_nut(&e)) {
                         gravar_arquivo(p, &txt);
                     }
@@ -147,8 +169,13 @@ fn coletor(cfg: Config, estado: Arc<Mutex<Estado>>) {
                     // tolera falhas isoladas; só marca desconectado após 3 seguidas
                     if e.falhas_seguidas >= 3 {
                         e.conectado = false;
+                        let motivo = e.ultimo_erro.clone().unwrap_or_default();
+                        novos.extend(hist.lock().unwrap().conexao(agora(), false, &motivo));
                     }
                 }
+            }
+            if let Some(p) = &cfg.arquivo_eventos {
+                historico::anexar_arquivo(p, &novos);
             }
         }
         std::thread::sleep(cfg.intervalo);
@@ -203,6 +230,7 @@ fn metricas(e: &Estado) -> String {
 
 fn servir(
     estado: &Arc<Mutex<Estado>>,
+    hist: &Arc<Mutex<Historico>>,
     metodo: &Method,
     url: &str,
 ) -> Response<std::io::Cursor<Vec<u8>>> {
@@ -215,6 +243,8 @@ fn servir(
             serde_json::to_string(&*estado.lock().unwrap()).unwrap(),
             200,
         ),
+        "/api/eventos" => json(hist.lock().unwrap().eventos_json(), 200),
+        "/api/historico" => json(hist.lock().unwrap().serie_json(), 200),
         "/api/saude" => {
             let e = estado.lock().unwrap();
             let obsoleto = e
@@ -284,12 +314,20 @@ fn main() {
         cfg.fator_vbat
     );
     let estado = Arc::new(Mutex::new(Estado::default()));
+    let hist = Arc::new(Mutex::new(Historico::novo(
+        cfg.historico_pontos,
+        cfg.historico_intervalo_s,
+    )));
+    if let Some(p) = &cfg.arquivo_eventos {
+        hist.lock().unwrap().restaurar(historico::ler_arquivo(p));
+    }
     {
         let estado = estado.clone();
+        let hist = hist.clone();
         std::thread::Builder::new()
             .name("coletor".into())
             .stack_size(256 * 1024)
-            .spawn(move || coletor(cfg, estado))
+            .spawn(move || coletor(cfg, estado, hist))
             .unwrap();
     }
     let servidor = Server::http(&escuta).unwrap_or_else(|e| {
@@ -297,7 +335,7 @@ fn main() {
         std::process::exit(1);
     });
     for req in servidor.incoming_requests() {
-        let resp = servir(&estado, req.method(), req.url());
+        let resp = servir(&estado, &hist, req.method(), req.url());
         let _ = req.respond(resp);
     }
 }
