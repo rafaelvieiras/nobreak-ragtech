@@ -84,5 +84,5 @@ Restart=on-failure
 
 ## Segurança
 
-O painel **não tem autenticação**. Não publique a porta na internet. Use `127.0.0.1:8088:8080` com um proxy reverso
+O painel **não tem autenticação**. Não publique a porta na internet. Use `100.93.251.251:8088:8080` com um proxy reverso
 (Caddy/Nginx + login) ou deixe só na rede local/VPN.
