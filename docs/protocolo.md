@@ -93,3 +93,17 @@ firmware muda de comportamento quando há software ligado. Este projeto **não**
 Deixe o serviço rodando com `NOBREAK_ARQUIVO_EVENTOS` e provoque uma queda curta (tire o nobreak da tomada por 1 minuto, com pouca carga).
 A tabela **Eventos e mudanças de bits** do painel mostra, em ordem, quais bits ligaram (`+bitN`) e desligaram (`−bitN`), a tensão da rede
 e a bateria naquele instante. Abra uma issue com essa tabela e o modelo do nobreak.
+
+### Bits que oscilam com a rede normal (Easy Pro 1200 TI, 30/out/2026) [observação]
+
+Com a rede estável e a carga em 2%, quatro registradores alternam sozinhos a cada poucos segundos, sem relação com queda de energia:
+
+| End. | Bit que alterna | Hipótese |
+|---|---|---|
+| `0x93` | bit 2 (`0x82` ↔ `0x86`) | estado do carregador ou do relé (não confirmado) |
+| `0x94` | bit 6 (`0x82` ↔ `0xC2`) | idem |
+| `0x95` | bit 0 (`0x00` ↔ `0x01`) | GERAIS2: pulso ligado ao ciclo do carregador (não confirmado) |
+| `0x99` | bit 0 (`0x76` ↔ `0x77`) | possível ruído de medição |
+
+Já `0x80`, `0x90`, `0x91` e `0x92` ficam parados nesse estado. Por isso o painel só destaca esses últimos como candidatos a alarme
+(o painel já trata como "ruidoso", só contando, o registrador que muda mais de 30 vezes em 10 minutos).
