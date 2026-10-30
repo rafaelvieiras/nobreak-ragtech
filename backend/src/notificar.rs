@@ -202,8 +202,8 @@ impl Detector {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Url {
-    host_porta: String,
-    caminho: String,
+    pub host_porta: String,
+    pub caminho: String,
 }
 
 /// Aceita só `http://host[:porta][/caminho]`.
@@ -296,17 +296,69 @@ pub fn postar(
 
 // ------------------------------------------------------------------ envio
 
+/// Formato do corpo.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Formato {
+    /// JSON do próprio serviço (`Notif`).
+    Json,
+    /// Publicação JSON do ntfy (`POST /` com `topic`, `title`, `message`, `priority`, `tags`).
+    Ntfy { topico: String },
+}
+
 /// Para onde e como enviar.
 #[derive(Clone, Debug)]
 pub struct Destino {
+    pub nome: &'static str,
     pub url: Url,
     pub cabecalhos: Vec<(String, String)>,
+    pub formato: Formato,
+}
+
+/// Prioridade do ntfy: 3 padrão, 4 alta, 5 urgente.
+fn prioridade_ntfy(n: &Notif) -> u8 {
+    match n.gravidade {
+        Gravidade::Info => 3,
+        Gravidade::Aviso => 4,
+        Gravidade::Erro => 5,
+    }
+}
+
+fn tags_ntfy(n: &Notif) -> Vec<&'static str> {
+    match n.evento {
+        "queda" => vec!["zap", "warning"],
+        "rede_voltou" => vec!["electric_plug", "white_check_mark"],
+        "alarme" => vec!["rotating_light"],
+        "desconectado" => vec!["x"],
+        "reconectado" => vec!["white_check_mark"],
+        "saude" => vec!["battery"],
+        _ => vec!["bell"],
+    }
 }
 
 impl Destino {
+    fn corpo(&self, n: &Notif) -> Result<(&'static str, Vec<u8>), String> {
+        match &self.formato {
+            Formato::Json => Ok((
+                "application/json",
+                serde_json::to_vec(n).map_err(|e| e.to_string())?,
+            )),
+            Formato::Ntfy { topico } => Ok((
+                "application/json",
+                serde_json::to_vec(&serde_json::json!({
+                    "topic": topico,
+                    "title": n.titulo,
+                    "message": n.texto,
+                    "priority": prioridade_ntfy(n),
+                    "tags": tags_ntfy(n),
+                }))
+                .map_err(|e| e.to_string())?,
+            )),
+        }
+    }
+
     pub fn enviar(&self, n: &Notif) -> Result<u16, String> {
-        let corpo = serde_json::to_vec(n).map_err(|e| e.to_string())?;
-        postar(&self.url, &self.cabecalhos, "application/json", &corpo)
+        let (tipo, corpo) = self.corpo(n)?;
+        postar(&self.url, &self.cabecalhos, tipo, &corpo)
     }
 }
 
@@ -326,33 +378,42 @@ fn enviar_com_tentativas(d: &Destino, n: &Notif, esperas: &[Duration]) -> Result
 fn laco(rx: Receiver<Notif>, d: Destino) {
     for n in rx {
         if let Err(e) = enviar_com_tentativas(&d, &n, &TENTATIVAS) {
-            eprintln!("notificação '{}' não enviada: {e}", n.evento);
+            eprintln!("notificação '{}' ({}) não enviada: {e}", n.evento, d.nome);
         }
     }
 }
 
-/// Detector mais a fila de envio. Fica dentro da thread do coletor.
+/// Detector mais uma fila e uma thread por destino (um destino fora do ar não atrasa o outro).
 pub struct Notificador {
     pub detector: Detector,
-    tx: SyncSender<Notif>,
+    filas: Vec<(&'static str, SyncSender<Notif>)>,
 }
 
 impl Notificador {
-    pub fn iniciar(detector: Detector, destino: Destino) -> Self {
-        let (tx, rx) = sync_channel(32);
-        std::thread::Builder::new()
-            .name("notificar".into())
-            .stack_size(256 * 1024)
-            .spawn(move || laco(rx, destino))
-            .expect("thread de notificação");
-        Notificador { detector, tx }
+    pub fn iniciar(detector: Detector, destinos: Vec<Destino>) -> Self {
+        let filas = destinos
+            .into_iter()
+            .map(|d| {
+                let (tx, rx) = sync_channel(32);
+                let nome = d.nome;
+                std::thread::Builder::new()
+                    .name(format!("notificar-{nome}"))
+                    .stack_size(256 * 1024)
+                    .spawn(move || laco(rx, d))
+                    .expect("thread de notificação");
+                (nome, tx)
+            })
+            .collect();
+        Notificador { detector, filas }
     }
 
-    /// Põe na fila. Se a fila encheu (destino fora do ar por muito tempo), descarta.
+    /// Põe na fila de cada destino. Se a fila encheu (destino fora do ar por muito tempo), descarta.
     pub fn enviar(&self, v: Vec<Notif>) {
         for n in v {
-            if self.tx.try_send(n).is_err() {
-                eprintln!("fila de notificações cheia: descartando");
+            for (nome, tx) in &self.filas {
+                if tx.try_send(n.clone()).is_err() {
+                    eprintln!("fila de notificações ({nome}) cheia: descartando");
+                }
             }
         }
     }
@@ -554,8 +615,10 @@ mod testes {
     fn webhook_envia_json_com_cabecalho() {
         let (url, h) = servidor("200 OK");
         let d = Destino {
+            nome: "webhook",
             url: parse_url(&url).unwrap(),
             cabecalhos: vec![("X-Token".into(), "segredo".into())],
+            formato: Formato::Json,
         };
         assert_eq!(d.enviar(&exemplo()), Ok(200));
         let req = h.join().unwrap();
@@ -570,11 +633,55 @@ mod testes {
     }
 
     #[test]
+    fn ntfy_envia_json_de_publicacao_com_token() {
+        let (url, h) = servidor("200 OK");
+        let raiz = url.split("/hook").next().unwrap().to_string();
+        let d = Destino {
+            nome: "ntfy",
+            url: parse_url(&format!("{raiz}/")).unwrap(),
+            cabecalhos: vec![("Authorization".into(), "Bearer tk_x".into())],
+            formato: Formato::Ntfy {
+                topico: "nobreak".into(),
+            },
+        };
+        let mut n = exemplo();
+        n.titulo = "Moon: falta de energia ⚡".into();
+        assert_eq!(d.enviar(&n), Ok(200));
+        let req = h.join().unwrap();
+        assert!(req.starts_with("POST / HTTP/1.1\r\n"));
+        assert!(req.contains("Authorization: Bearer tk_x"));
+        let c: serde_json::Value =
+            serde_json::from_str(req.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        assert_eq!(c["topic"], "nobreak");
+        assert_eq!(c["title"], "Moon: falta de energia ⚡");
+        assert_eq!(c["message"], "Passou para a bateria.");
+        assert_eq!(c["priority"], 4);
+        assert_eq!(c["tags"], serde_json::json!(["zap", "warning"]));
+    }
+
+    #[test]
+    fn prioridade_segue_a_gravidade() {
+        let mut n = exemplo();
+        n.gravidade = Gravidade::Info;
+        assert_eq!(prioridade_ntfy(&n), 3);
+        n.gravidade = Gravidade::Aviso;
+        assert_eq!(prioridade_ntfy(&n), 4);
+        n.gravidade = Gravidade::Erro;
+        assert_eq!(prioridade_ntfy(&n), 5);
+        for e in EVENTOS {
+            n.evento = e;
+            assert!(!tags_ntfy(&n).is_empty());
+        }
+    }
+
+    #[test]
     fn webhook_status_de_erro_e_destino_fora_do_ar() {
         let (url, h) = servidor("500 Internal Server Error");
         let d = Destino {
+            nome: "webhook",
             url: parse_url(&url).unwrap(),
             cabecalhos: vec![],
+            formato: Formato::Json,
         };
         assert!(d.enviar(&exemplo()).unwrap_err().contains("500"));
         h.join().unwrap();
@@ -583,8 +690,10 @@ mod testes {
         let url = format!("http://{}/", ln.local_addr().unwrap());
         drop(ln);
         let d = Destino {
+            nome: "webhook",
             url: parse_url(&url).unwrap(),
             cabecalhos: vec![],
+            formato: Formato::Json,
         };
         assert!(d.enviar(&exemplo()).is_err());
     }
@@ -596,8 +705,10 @@ mod testes {
         let addr = ln.local_addr().unwrap();
         drop(ln);
         let d = Destino {
+            nome: "webhook",
             url: parse_url(&format!("http://{addr}/")).unwrap(),
             cabecalhos: vec![],
+            formato: Formato::Json,
         };
         let sobe = std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(150));

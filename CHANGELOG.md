@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.0 (30/out/2026)
+- Notificações por ntfy (`NOBREAK_NTFY_URL`, `NOBREAK_NTFY_TOPICO`, `NOBREAK_NTFY_TOKEN`), com prioridade pela gravidade e tags por evento. Webhook e ntfy podem rodar juntos, cada um com fila e thread próprias.
+- `--testar-webhook` virou `--testar-notificacao` (o nome antigo ainda funciona) e testa todos os destinos ligados.
+
 ## 0.5.0 (30/out/2026)
 - Notificações por webhook HTTP (`backend/src/notificar.rs`): queda, volta da rede, alarme, comunicação perdida e restabelecida, aviso de saúde da bateria. Variáveis `NOBREAK_WEBHOOK_URL`, `NOBREAK_WEBHOOK_CABECALHOS`, `NOBREAK_NOTIFICAR_NOME` e `NOBREAK_NOTIFICAR_EVENTOS`.
 - Novo comando `--testar-webhook`.

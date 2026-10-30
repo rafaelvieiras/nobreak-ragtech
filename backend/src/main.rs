@@ -69,6 +69,10 @@ struct Config {
     /// Webhook HTTP das notificações (`NOBREAK_WEBHOOK_URL`) e seus cabeçalhos extras.
     webhook_url: Option<String>,
     webhook_cabecalhos: Vec<String>,
+    /// ntfy: `NOBREAK_NTFY_URL` (servidor, ex.: `http://host:2586`), tópico e token.
+    ntfy_url: Option<String>,
+    ntfy_topico: String,
+    ntfy_token: Option<String>,
     notificar_nome: String,
     notificar_eventos: String,
 }
@@ -123,24 +127,61 @@ fn config() -> Config {
             .map(|x| x.trim().to_string())
             .filter(|x| !x.is_empty())
             .collect(),
+        ntfy_url: std::env::var("NOBREAK_NTFY_URL")
+            .ok()
+            .filter(|v| !v.trim().is_empty()),
+        ntfy_topico: env("NOBREAK_NTFY_TOPICO", "nobreak"),
+        ntfy_token: std::env::var("NOBREAK_NTFY_TOKEN")
+            .ok()
+            .filter(|v| !v.trim().is_empty()),
         notificar_nome: env("NOBREAK_NOTIFICAR_NOME", "Nobreak"),
         notificar_eventos: env("NOBREAK_NOTIFICAR_EVENTOS", ""),
     }
 }
 
-/// Monta o destino do webhook a partir da configuração.
-fn destino_webhook(cfg: &Config) -> Result<Option<Destino>, String> {
-    let Some(u) = &cfg.webhook_url else {
-        return Ok(None);
-    };
-    let url = notificar::parse_url(u).map_err(|e| format!("NOBREAK_WEBHOOK_URL: {e}"))?;
-    let cabecalhos = cfg
-        .webhook_cabecalhos
-        .iter()
-        .map(|c| notificar::parse_cabecalho(c))
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| format!("NOBREAK_WEBHOOK_CABECALHOS: {e}"))?;
-    Ok(Some(Destino { url, cabecalhos }))
+/// Monta os destinos (webhook e ntfy) a partir da configuração.
+fn destinos(cfg: &Config) -> Result<Vec<Destino>, String> {
+    let mut v = Vec::new();
+    if let Some(u) = &cfg.webhook_url {
+        let url = notificar::parse_url(u).map_err(|e| format!("NOBREAK_WEBHOOK_URL: {e}"))?;
+        let cabecalhos = cfg
+            .webhook_cabecalhos
+            .iter()
+            .map(|c| notificar::parse_cabecalho(c))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("NOBREAK_WEBHOOK_CABECALHOS: {e}"))?;
+        v.push(Destino {
+            nome: "webhook",
+            url,
+            cabecalhos,
+            formato: notificar::Formato::Json,
+        });
+    }
+    if let Some(u) = &cfg.ntfy_url {
+        let mut url = notificar::parse_url(u).map_err(|e| format!("NOBREAK_NTFY_URL: {e}"))?;
+        // a publicação em JSON vai sempre para a raiz do servidor
+        url.caminho = "/".into();
+        let topico = cfg.ntfy_topico.trim().to_string();
+        if topico.is_empty() || topico.contains(|c: char| c == '/' || c.is_whitespace()) {
+            return Err("NOBREAK_NTFY_TOPICO: tópico inválido".into());
+        }
+        let cabecalhos = match &cfg.ntfy_token {
+            Some(t) => {
+                vec![
+                    notificar::parse_cabecalho(&format!("Authorization: Bearer {}", t.trim()))
+                        .map_err(|e| format!("NOBREAK_NTFY_TOKEN: {e}"))?,
+                ]
+            }
+            None => vec![],
+        };
+        v.push(Destino {
+            nome: "ntfy",
+            url,
+            cabecalhos,
+            formato: notificar::Formato::Ntfy { topico },
+        });
+    }
+    Ok(v)
 }
 
 fn agora() -> u64 {
@@ -543,35 +584,43 @@ fn main() {
     }
 
     let cfg = config();
-    if std::env::args().any(|a| a == "--testar-webhook") {
-        // envia uma notificação de teste e sai (0 = o destino aceitou)
-        let r = destino_webhook(&cfg).and_then(|d| {
-            let d = d.ok_or("defina NOBREAK_WEBHOOK_URL")?;
-            d.enviar(&notificar::Notif {
+    if std::env::args().any(|a| a == "--testar-notificacao" || a == "--testar-webhook") {
+        // envia uma notificação de teste a cada destino e sai (0 = todos aceitaram)
+        let d = destinos(&cfg).unwrap_or_else(|e| {
+            eprintln!("falhou: {e}");
+            std::process::exit(1);
+        });
+        if d.is_empty() {
+            eprintln!("falhou: defina NOBREAK_WEBHOOK_URL e/ou NOBREAK_NTFY_URL");
+            std::process::exit(1);
+        }
+        let mut ok = true;
+        for d in &d {
+            let n = notificar::Notif {
                 evento: "teste",
                 gravidade: alarmes::Gravidade::Info,
                 titulo: format!("{}: teste", cfg.notificar_nome),
                 texto: "Notificação de teste do nobreak-ragtech.".into(),
                 t: agora(),
-            })
-        });
-        match r {
-            Ok(c) => println!("webhook respondeu HTTP {c}"),
-            Err(e) => {
-                eprintln!("falhou: {e}");
-                std::process::exit(1);
+            };
+            match d.enviar(&n) {
+                Ok(c) => println!("{}: respondeu HTTP {c}", d.nome),
+                Err(e) => {
+                    eprintln!("{}: falhou: {e}", d.nome);
+                    ok = false;
+                }
             }
         }
-        return;
+        std::process::exit(if ok { 0 } else { 1 });
     }
-    let notificador = match destino_webhook(&cfg)
+    let notificador = match destinos(&cfg)
         .and_then(|d| Ok((d, notificar::parse_filtro(&cfg.notificar_eventos)?)))
     {
-        Ok((Some(d), filtro)) => Some(Notificador::iniciar(
+        Ok((d, filtro)) if !d.is_empty() => Some(Notificador::iniciar(
             Detector::novo(&cfg.notificar_nome, filtro),
             d,
         )),
-        Ok((None, _)) => None,
+        Ok(_) => None,
         Err(e) => {
             eprintln!("notificações desligadas: {e}");
             None

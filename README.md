@@ -18,7 +18,7 @@ ligado por USB num servidor, NAS ou Raspberry Pi, e o software oficial não roda
 - API JSON (`/api/estado`, `/api/eventos`, `/api/historico`, `/api/quedas`, `/api/bateria`, `/api/historico/longo`) e métricas Prometheus (`/metrics`).
 - **Alarmes com nome** (ausência de rede, fim de bateria, sobrecarga, sobretemperatura, falha do inversor...) e estado correto para o NUT (`OL`, `OB`, `LB`, `OVER`, `CHRG`).
 - **Resumo de quedas de energia** (24 h, 7 e 30 dias): quantidade, tempo na bateria, maior queda e bateria mínima. O começo de cada queda vai para o disco na hora, então uma queda que derruba o servidor não se perde.
-- **Notificações por webhook**: avisa em queda de energia, volta da rede, alarme novo, perda de comunicação e aviso de saúde da bateria. Envio em segundo plano, com novas tentativas, sem travar a leitura.
+- **Notificações por webhook e ntfy**: avisa em queda de energia, volta da rede, alarme novo, perda de comunicação e aviso de saúde da bateria. Envio em segundo plano, com novas tentativas, sem travar a leitura.
 - **Histórico de 30 dias**: baldes de 15 min com média, mínimo e máximo de rede, bateria, carga e temperatura, gravados em arquivo. Sobrevive a reinício. O mínimo mostra quedas curtas que a média esconde.
 - **Saúde da bateria**: tensão em repouso, autonomia projetada e tensão afundando a cada queda, tempo de recarga, temperatura e idade. Gera avisos no painel e em `/api/bateria`.
 - **Contador regressivo de desligamento** do nobreak, quando ativo.
@@ -60,6 +60,9 @@ Sem Docker, baixe o binário em [Releases](../../releases) e rode `./nobreak-rag
 | `NOBREAK_SERIE_INTERVALO_S` | `900` | Segundos por balde da série longa |
 | `NOBREAK_WEBHOOK_URL` | vazio | Liga as notificações. Só `http://` (o cliente não tem TLS, para o binário continuar leve). Para `https`, use um proxy local |
 | `NOBREAK_WEBHOOK_CABECALHOS` | vazio | Cabeçalhos extras, separados por `\|` (ex.: `Authorization: Bearer x\|X-Outro: 1`). Trate como segredo |
+| `NOBREAK_NTFY_URL` | vazio | Liga o ntfy. Endereço do servidor, só `http://` (ex.: `http://host:2586`) |
+| `NOBREAK_NTFY_TOPICO` | `nobreak` | Tópico do ntfy (sem `/` nem espaços) |
+| `NOBREAK_NTFY_TOKEN` | vazio | Token de acesso do ntfy (enviado como `Authorization: Bearer`). Trate como segredo |
 | `NOBREAK_NOTIFICAR_NOME` | `Nobreak` | Prefixo do título das mensagens |
 | `NOBREAK_NOTIFICAR_EVENTOS` | vazio (todos) | Lista separada por vírgula: `queda`, `rede_voltou`, `alarme`, `desconectado`, `reconectado`, `saude` |
 | `NOBREAK_HISTORICO_PONTOS` | `1440` | Pontos guardados nos gráficos (memória, ~50 bytes cada) |
@@ -119,7 +122,7 @@ Com `NOBREAK_WEBHOOK_URL` definida, o serviço faz um `POST` JSON a cada evento:
 `gravidade` é `info`, `aviso` ou `erro`; `t` são segundos Unix. Para testar o destino sem esperar uma queda:
 
 ```bash
-NOBREAK_WEBHOOK_URL=http://host:porta/caminho ./nobreak-ragtech --testar-webhook
+NOBREAK_WEBHOOK_URL=http://host:porta/caminho ./nobreak-ragtech --testar-notificacao
 ```
 
 Regras do envio:
@@ -128,3 +131,13 @@ Regras do envio:
 - O mesmo alarme só reaparece depois de 10 min, e o mesmo aviso de saúde depois de 6 h.
 - A falta de rede gera só o aviso de queda, não um alarme a mais.
 - URL ou cabeçalho inválido desliga as notificações e escreve o motivo no log. A leitura do nobreak continua.
+
+### ntfy
+
+Com `NOBREAK_NTFY_URL`, o serviço publica no tópico `NOBREAK_NTFY_TOPICO` em JSON (`POST /` com `topic`, `title`, `message`, `priority`, `tags`). A prioridade segue a gravidade: `info` = 3, `aviso` = 4 (alta), `erro` = 5 (urgente). Cada evento leva uma tag que vira emoji no app (queda = ⚡, alarme = 🚨, bateria = 🔋).
+
+```bash
+NOBREAK_NTFY_URL=http://host:2586 NOBREAK_NTFY_TOPICO=nobreak NOBREAK_NTFY_TOKEN=tk_xxx ./nobreak-ragtech --testar-notificacao
+```
+
+Os dois destinos podem ficar ligados juntos. Cada um tem fila e thread próprias, então um destino fora do ar não atrasa o outro. O servidor `ntfy.sh` público usa `https` e por isso exige um proxy local; o normal é rodar o seu próprio ntfy na rede.
