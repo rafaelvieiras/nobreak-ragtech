@@ -42,7 +42,7 @@ Sem Docker, baixe o binário em [Releases](../../releases) e rode `./nobreak-rag
 | `NOBREAK_ESCUTA` | `0.0.0.0:8080` | Endereço do painel |
 | `NOBREAK_INTERVALO_S` | `5` | Segundos entre leituras |
 | `NOBREAK_ID` | `A` | Nibble de endereço do quadro (hex). O padrão serve para a maioria |
-| `NOBREAK_FATOR_VBAT` | `1` | Multiplica a tensão da bateria. Use `2` se o valor aparecer pela metade |
+| `NOBREAK_FATOR_VBAT` | `1` | Multiplica a tensão da bateria. Use `2` se o valor aparecer pela metade do medido |
 | `NOBREAK_ARQUIVO_NUT` | vazio | Caminho do arquivo para o `dummy-ups` do NUT |
 | `NOBREAK_SIMULAR` | `0` | `1` usa dados de exemplo, sem nobreak (para testar o painel) |
 

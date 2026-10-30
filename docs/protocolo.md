@@ -71,11 +71,11 @@ f = (((reg97 - osc53) × 4 / (osc57 - osc53)) + 53) × 0,9806 + 1,46
 
 onde `osc53` e `osc57` são os registradores `0x202` e `0x203`. Resultado típico na rede de 60 Hz: ~59,7 Hz. [estimativa]
 
-### Tensão da bateria: ponto em aberto
+### Tensão da bateria
 
-A tabela do modelo 6 (Easy Pro 1200 TI) dá `0x8A × 0,067` ≈ **13 V**, mas o arquivo antigo que o Moon usava
-registrava **26,8 V**, o que combina com um banco de duas baterias de 12 V em série. Até esclarecer, o padrão é
-`×1` e a variável `NOBREAK_FATOR_VBAT=2` dobra o valor. Se você medir a tensão com multímetro, conte na issue.
+`0x8A × escala do modelo` (0,067 no modelo 6) dá ≈ 13 V no Easy Pro 1200 TI. O arquivo de um script antigo registrava o dobro
+(~26,8 V), mas o dono do nobreak concluiu que esse valor estava errado. Se o seu exemplar tiver bateria de 24 V e o painel mostrar
+metade, use `NOBREAK_FATOR_VBAT=2` e conte na issue o modelo e a medida com multímetro.
 
 ## Pistas sobre o LED que fica piscando depois de queda de energia [hipótese]
 

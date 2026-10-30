@@ -55,7 +55,7 @@
     <div class="grade">
       <Cartao rotulo="Carga da bateria" valor={f(m.carga_bateria_pct, 0)} unidade="%" barra={m.carga_bateria_pct} />
       <Cartao rotulo="Tensão da bateria" valor={f(m.tensao_bateria_v, 1)} unidade="V"
-        dica="Se o valor parecer metade do real, ajuste NOBREAK_FATOR_VBAT=2 (veja o README)." />
+        dica="Não bate com o multímetro? Veja NOBREAK_FATOR_VBAT no README." />
       <Cartao rotulo="Temperatura" valor={f(m.temperatura_c, 0)} unidade="°C" />
     </div>
 
