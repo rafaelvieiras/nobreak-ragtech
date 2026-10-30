@@ -79,9 +79,7 @@ metade, use `NOBREAK_FATOR_VBAT=2` e conte na issue o modelo e a medida com mult
 
 ## Bits de FALHAS, EVENTOS e USUARIO (família 10, engenharia reversa do Supervise 6.3, 30/out/2026)
 
-Origem: a função que converte registradores em campos internos (`EasyNB::UpsVarToNBVar`) e a que grava o log
-(`SrvClass::AddToLog*SetBits`), cruzadas com o arquivo de idiomas. A descrição abaixo está em palavras próprias.
-Confiança: **alta** onde há mensagem; **lacuna** onde o app converte o bit mas não mostra mensagem.
+Origem: leitura estática do software oficial, descrita em palavras próprias, e confirmada pelas quedas observadas. Confiança: **alta** onde há mensagem; **lacuna** onde o app converte o bit mas não mostra mensagem.
 
 ### `0x91` FALHAS
 | Bit | Máscara | Significado |
