@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.3.2 (30/out/2026)
+- Se o serviço reinicia durante a recarga, o tempo de recarga fica desconhecido em vez de contar a partir do reinício.
+
 ## 0.3.1 (30/out/2026)
 - Saúde da bateria (`/api/bateria`, painel e métricas `nobreak_bateria_*`): tensão em repouso, autonomia projetada pela queda, afundamento de tensão, tempo de recarga até 99%, temperatura e idade. Os limites estão em `backend/src/bateria.rs`.
 - Nova variável `NOBREAK_BATERIA_INSTALADA`.

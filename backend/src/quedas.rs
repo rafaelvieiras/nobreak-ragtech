@@ -23,6 +23,8 @@ pub struct Queda {
     pub carga_max_pct: Option<f32>,
     /// Tempo entre o fim da queda e a bateria voltar a 99%. `None` enquanto recarrega.
     pub recarga_s: Option<u64>,
+    /// O serviço reiniciou durante a recarga: o tempo real é desconhecido.
+    pub recarga_perdida: bool,
     /// O serviço parou durante a queda: a duração real é desconhecida.
     pub interrompida: bool,
 }
@@ -86,7 +88,9 @@ impl Quedas {
     pub fn recarregando(&self) -> bool {
         self.lista
             .back()
-            .map(|q| q.fim.is_some() && q.recarga_s.is_none() && !q.interrompida)
+            .map(|q| {
+                q.fim.is_some() && q.recarga_s.is_none() && !q.recarga_perdida && !q.interrompida
+            })
             .unwrap_or(false)
     }
 
@@ -108,6 +112,7 @@ impl Quedas {
             bateria_v_min: bateria_v,
             carga_max_pct: carga,
             recarga_s: None,
+            recarga_perdida: false,
             interrompida: false,
         }
     }
@@ -164,6 +169,12 @@ impl Quedas {
         if self.em_curso() {
             if let Some(q) = self.lista.back_mut() {
                 q.interrompida = true;
+            }
+        }
+        // queda terminada sem linha `recarga`: o serviço parou durante a recarga
+        if self.recarregando() {
+            if let Some(q) = self.lista.back_mut() {
+                q.recarga_perdida = true;
             }
         }
     }
@@ -503,6 +514,23 @@ mod testes {
             serde_json::from_str(r#"{"t":1,"ev":"inicio","bateria_pct":100.0,"entrada_v":5.0}"#)
                 .unwrap();
         assert_eq!(velha.bateria_v, None);
+    }
+
+    #[test]
+    fn reinicio_durante_a_recarga_marca_recarga_perdida() {
+        let l = |t: u64, ev: &str| Linha {
+            t,
+            ev: ev.into(),
+            bateria_pct: 80.0,
+            entrada_v: 5.0,
+            bateria_v: None,
+            carga_pct: None,
+        };
+        let mut q = Quedas::default();
+        q.restaurar(&[l(100, "inicio"), l(160, "fim")]);
+        assert!(!q.recarregando());
+        assert!(q.lista()[0].recarga_perdida);
+        assert_eq!(q.lista()[0].recarga_s, None);
     }
 
     #[test]
