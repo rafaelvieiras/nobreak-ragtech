@@ -42,14 +42,35 @@ pub enum Evento {
     Cancelado { motivo: String },
 }
 
+/// Uma leitura, do ponto de vista da política.
+#[derive(Debug, Clone, Copy)]
+pub struct Leitura {
+    /// Está na bateria (rede ausente).
+    pub em_queda: bool,
+    pub bateria_pct: f32,
+    /// Carga no início da queda atual (a taxa de queda sai da diferença).
+    pub bateria_inicio_pct: f32,
+    /// Há quanto tempo a queda atual começou.
+    pub em_bateria_s: u64,
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
     /// `false` = só observa e registra, nunca pede desligamento.
     pub ligada: bool,
+    /// Projeta desligar quando a autonomia estimada cair a este valor.
+    /// Precisa cobrir confirmação + aviso + o próprio desligamento.
+    pub margem_s: u64,
+    /// Piso absoluto de bateria, para quando ainda não dá para projetar.
     pub bateria_minima_pct: f32,
     pub confirma_s: u64,
+    /// Teto de tempo em bateria, mesmo que a projeção diga que sobra carga.
     pub tempo_maximo_s: u64,
     pub aviso_s: u64,
+    /// Bateria considerada vazia na projeção (o nobreak corta antes de 0 %).
+    pub piso_pct: f32,
+    /// Tempo mínimo em bateria antes de acreditar na taxa de queda.
+    pub dados_minimos_s: u64,
     /// Arquivo onde o pedido é escrito. Vazio = não escreve (só evento/métrica).
     pub arquivo: Option<String>,
 }
@@ -58,13 +79,39 @@ impl Default for Config {
     fn default() -> Self {
         Config {
             ligada: false,
-            bateria_minima_pct: 50.0,
-            confirma_s: 20,
-            tempo_maximo_s: 300,
-            aviso_s: 45,
+            margem_s: 120,
+            bateria_minima_pct: 40.0,
+            confirma_s: 10,
+            tempo_maximo_s: 180,
+            aviso_s: 20,
+            piso_pct: 15.0,
+            dados_minimos_s: 20,
             arquivo: None,
         }
     }
+}
+
+/// Estimativa de autonomia a partir da taxa de queda observada.
+///
+/// Devolve `(segundos_restantes, %_por_minuto)`. `None` quando ainda há poucos dados
+/// ou a bateria não está caindo — nesse caso quem manda é o piso absoluto.
+pub fn projetar(
+    inicio_pct: f32,
+    atual_pct: f32,
+    em_bateria_s: u64,
+    piso_pct: f32,
+    dados_minimos_s: u64,
+) -> Option<(u64, f32)> {
+    if em_bateria_s == 0 || em_bateria_s < dados_minimos_s {
+        return None;
+    }
+    let queda = inicio_pct - atual_pct;
+    if queda <= 0.5 {
+        return None;
+    }
+    let taxa = queda / (em_bateria_s as f32 / 60.0); // % por minuto
+    let restante_pct = (atual_pct - piso_pct).max(0.0);
+    Some(((restante_pct / taxa * 60.0) as u64, taxa))
 }
 
 #[derive(Debug, Default)]
@@ -77,6 +124,10 @@ pub struct Politica {
     aviso_desde: Option<u64>,
     /// Motivo do pedido em curso.
     motivo: String,
+    /// Última autonomia projetada, para o painel.
+    autonomia_s: Option<u64>,
+    /// Aviso efetivamente usado nesta contagem (pode ser menor que o configurado).
+    aviso_efetivo_s: u64,
 }
 
 /// Estado atual, exposto no `/api/estado` e nas métricas.
@@ -87,6 +138,8 @@ pub struct Situacao {
     pub motivo: Option<String>,
     /// Segundos até o pedido, quando em aviso.
     pub restante_s: Option<u64>,
+    /// Autonomia estimada pela taxa de queda atual (None fora de queda ou sem dados).
+    pub autonomia_s: Option<u64>,
 }
 
 impl Politica {
@@ -108,27 +161,41 @@ impl Politica {
             },
             restante_s: self.aviso_desde.map(|d| {
                 let usado = t.saturating_sub(d);
-                self.cfg.aviso_s.saturating_sub(usado)
+                self.aviso_efetivo_s.saturating_sub(usado)
             }),
+            autonomia_s: self.autonomia_s,
         }
     }
 
-    /// Avalia uma leitura boa. `em_queda` = está na bateria; `em_bateria_s` = duração da
-    /// queda atual (0 quando a rede está presente).
-    pub fn avaliar(
-        &mut self,
-        t: u64,
-        em_queda: bool,
-        bateria_pct: f32,
-        em_bateria_s: u64,
-    ) -> Option<Evento> {
+    /// Avalia uma leitura boa. Nunca age sem saber que está na bateria.
+    pub fn avaliar(&mut self, t: u64, l: Leitura) -> Option<Evento> {
         if !self.cfg.ligada {
             return None;
         }
-        let bateria_baixa = bateria_pct <= self.cfg.bateria_minima_pct;
+        if !l.em_queda {
+            self.autonomia_s = None;
+        }
+        let projecao = if l.em_queda {
+            projetar(
+                l.bateria_inicio_pct,
+                l.bateria_pct,
+                l.em_bateria_s,
+                self.cfg.piso_pct,
+                self.cfg.dados_minimos_s,
+            )
+        } else {
+            None
+        };
+        if let Some((s, _)) = projecao {
+            self.autonomia_s = Some(s);
+        }
+        let autonomia_curta = projecao
+            .map(|(s, _)| s <= self.cfg.margem_s)
+            .unwrap_or(false);
+        let bateria_baixa = l.bateria_pct <= self.cfg.bateria_minima_pct;
         let tempo_estourado =
-            em_bateria_s >= self.cfg.tempo_maximo_s && self.cfg.tempo_maximo_s > 0;
-        let perigo = em_queda && (bateria_baixa || tempo_estourado);
+            self.cfg.tempo_maximo_s > 0 && l.em_bateria_s >= self.cfg.tempo_maximo_s;
+        let perigo = l.em_queda && (autonomia_curta || bateria_baixa || tempo_estourado);
 
         if !perigo {
             let estava_avisando = self.fase != Fase::Normal;
@@ -141,25 +208,27 @@ impl Politica {
             });
         }
 
-        let motivo = if bateria_baixa && tempo_estourado {
-            format!(
-                "bateria em {bateria_pct:.0}% (limite {:.0}%) e {em_bateria_s}s sem rede (limite {}s)",
-                self.cfg.bateria_minima_pct, self.cfg.tempo_maximo_s
-            )
-        } else if bateria_baixa {
-            format!(
-                "bateria em {bateria_pct:.0}% (limite {:.0}%), {em_bateria_s}s sem rede",
-                self.cfg.bateria_minima_pct
-            )
-        } else {
-            format!(
-                "{em_bateria_s}s sem rede (limite {}s), bateria em {bateria_pct:.0}%",
-                self.cfg.tempo_maximo_s
-            )
+        let motivo = match (projecao, autonomia_curta) {
+            (Some((s, taxa)), true) => format!(
+                "autonomia estimada de {s}s (bateria em {:.0}%, caindo {taxa:.0}%/min, limite {}s)",
+                l.bateria_pct, self.cfg.margem_s
+            ),
+            _ if bateria_baixa => format!(
+                "bateria em {:.0}% (piso {:.0}%), {}s sem rede",
+                l.bateria_pct, self.cfg.bateria_minima_pct, l.em_bateria_s
+            ),
+            _ => format!(
+                "{}s sem rede (limite {}s), bateria em {:.0}%",
+                l.em_bateria_s, self.cfg.tempo_maximo_s, l.bateria_pct
+            ),
         };
 
         let inicio = *self.perigo_desde.get_or_insert(t);
-        if t.saturating_sub(inicio) < self.cfg.confirma_s {
+        // A projeção de autonomia já nasce de `dados_minimos_s` de queda real: exigir mais
+        // uma janela de confirmação comeria a autonomia que sobrou. Os gatilhos baratos
+        // (piso de bateria, teto de tempo) é que precisam de confirmação.
+        let confirmado = autonomia_curta || t.saturating_sub(inicio) >= self.cfg.confirma_s;
+        if !confirmado {
             return None;
         }
 
@@ -167,31 +236,37 @@ impl Politica {
             return None;
         }
         if self.fase == Fase::Normal {
+            // Com pouca autonomia o aviso encolhe: a contagem não pode consumir o tempo
+            // que ainda existe. Um terço da autonomia projetada é o teto do aviso.
+            let aviso = match projecao {
+                Some((s, _)) if autonomia_curta => self.cfg.aviso_s.min(s / 3),
+                _ => self.cfg.aviso_s,
+            };
             self.fase = Fase::Aviso;
             self.aviso_desde = Some(t);
+            self.aviso_efetivo_s = aviso;
             self.motivo = motivo.clone();
-            // com aviso de 0 s não há contagem: segue direto para o pedido neste ciclo
-            if self.cfg.aviso_s > 0 {
+            if aviso > 0 {
                 return Some(Evento::Aviso {
-                    restante_s: self.cfg.aviso_s,
+                    restante_s: aviso,
                     motivo,
                 });
             }
         }
         let desde = self.aviso_desde.unwrap_or(t);
-        if t.saturating_sub(desde) < self.cfg.aviso_s {
+        if t.saturating_sub(desde) < self.aviso_efetivo_s {
             return None;
         }
-        Some(self.pedir(t, motivo, bateria_pct, em_bateria_s))
+        Some(self.pedir(t, motivo, l))
     }
 
     /// Grava o pedido (quando há arquivo configurado) e vira `Fase::Pedido`.
-    fn pedir(&mut self, t: u64, motivo: String, bateria_pct: f32, em_bateria_s: u64) -> Evento {
+    fn pedir(&mut self, t: u64, motivo: String, l: Leitura) -> Evento {
         self.fase = Fase::Pedido;
         self.motivo = motivo.clone();
         let erro = match &self.cfg.arquivo {
             Some(caminho) => {
-                let conteudo = pedido_json(t, &motivo, bateria_pct, em_bateria_s);
+                let conteudo = pedido_json(t, &motivo, l.bateria_pct, l.em_bateria_s);
                 match std::fs::write(caminho, conteudo) {
                     Ok(()) => None,
                     Err(e) => Some(format!("não consegui escrever o pedido em {caminho}: {e}")),
@@ -219,22 +294,70 @@ fn pedido_json(t: u64, motivo: &str, bateria_pct: f32, em_bateria_s: u64) -> Str
 mod testes {
     use super::*;
 
-    fn politica() -> Politica {
-        Politica::nova(Config {
+    fn cfg() -> Config {
+        Config {
             ligada: true,
-            bateria_minima_pct: 50.0,
-            confirma_s: 20,
-            tempo_maximo_s: 300,
-            aviso_s: 45,
+            margem_s: 120,
+            bateria_minima_pct: 40.0,
+            confirma_s: 10,
+            tempo_maximo_s: 180,
+            aviso_s: 20,
+            piso_pct: 15.0,
+            dados_minimos_s: 20,
             arquivo: None,
-        })
+        }
+    }
+
+    fn politica() -> Politica {
+        Politica::nova(cfg())
+    }
+
+    fn queda(pct: f32, inicio: f32, s: u64) -> Leitura {
+        Leitura {
+            em_queda: true,
+            bateria_pct: pct,
+            bateria_inicio_pct: inicio,
+            em_bateria_s: s,
+        }
+    }
+
+    fn rede(pct: f32) -> Leitura {
+        Leitura {
+            em_queda: false,
+            bateria_pct: pct,
+            bateria_inicio_pct: pct,
+            em_bateria_s: 0,
+        }
+    }
+
+    #[test]
+    fn projecao_do_teste_de_30_out() {
+        // 100 % -> 18 % em 508 s (carga de 3 %): ~9,7 %/min, sobram ~18 s até o piso de 15 %
+        let (s, taxa) = projetar(100.0, 18.0, 508, 15.0, 20).unwrap();
+        assert!((taxa - 9.685).abs() < 0.01, "taxa {taxa}");
+        assert!((s as i64 - 18).abs() <= 1, "autonomia {s}");
+    }
+
+    #[test]
+    fn projecao_com_a_carga_de_hoje() {
+        // com 35 % de carga a queda é muito mais rápida: 100 % -> 55 % em 30 s
+        let (s, taxa) = projetar(100.0, 55.0, 30, 15.0, 20).unwrap();
+        assert!((taxa - 90.0).abs() < 0.01, "taxa {taxa}");
+        assert_eq!(s, 26); // (55-15)/90 min -> 26 s
+    }
+
+    #[test]
+    fn projecao_precisa_de_dados() {
+        assert_eq!(projetar(100.0, 80.0, 10, 15.0, 20), None); // cedo demais
+        assert_eq!(projetar(100.0, 99.9, 60, 15.0, 20), None); // não está caindo
+        assert_eq!(projetar(100.0, 80.0, 0, 15.0, 20), None);
     }
 
     #[test]
     fn com_rede_nunca_age() {
         let mut p = politica();
         for t in 0..600 {
-            assert_eq!(p.avaliar(t, false, 5.0, 0), None);
+            assert_eq!(p.avaliar(t, rede(5.0)), None);
         }
         assert_eq!(p.situacao(600).fase, Fase::Normal);
     }
@@ -246,62 +369,74 @@ mod testes {
             ..Config::default()
         });
         for t in 0..600 {
-            assert_eq!(p.avaliar(t, true, 1.0, 500), None);
+            assert_eq!(p.avaliar(t, queda(1.0, 100.0, 500)), None);
         }
     }
 
     #[test]
-    fn aviso_depois_pedido() {
+    fn autonomia_curta_dispara_mesmo_com_bateria_alta() {
+        // queda rápida (carga alta): 38 % em 20 s = 114 %/min; sobram ~24 s até o piso
         let mut p = politica();
-        // bateria baixa em t=100; confirma em 120
-        assert_eq!(p.avaliar(100, true, 40.0, 30), None);
-        assert_eq!(p.avaliar(115, true, 39.0, 45), None);
+        assert_eq!(p.avaliar(100, queda(88.0, 100.0, 8)), None); // dados insuficientes
+        match p.avaliar(112, queda(62.0, 100.0, 20)) {
+            Some(Evento::Aviso { restante_s, motivo }) => {
+                // o aviso encolhe para um terço da autonomia (~24 s -> 8 s)
+                assert_eq!(restante_s, 8, "aviso com autonomia curta");
+                assert!(motivo.contains("autonomia estimada"), "{motivo}");
+            }
+            outro => panic!("esperava Aviso, veio {outro:?}"),
+        }
+        assert_eq!(p.situacao(112).autonomia_s, Some(24));
+        // pedido 8 s depois do aviso, sem esperar a confirmação longa
         assert!(matches!(
-            p.avaliar(120, true, 38.0, 50),
-            Some(Evento::Aviso { restante_s: 45, .. })
-        ));
-        assert_eq!(p.situacao(120).fase, Fase::Aviso);
-        // durante o aviso não repete
-        assert_eq!(p.avaliar(140, true, 35.0, 70), None);
-        assert!(matches!(
-            p.avaliar(165, true, 30.0, 95),
+            p.avaliar(121, queda(45.0, 100.0, 29)),
             Some(Evento::Pedido { .. })
         ));
-        assert_eq!(p.situacao(165).fase, Fase::Pedido);
-        // depois do pedido, silêncio
-        assert_eq!(p.avaliar(200, true, 20.0, 130), None);
+        assert_eq!(p.situacao(121).fase, Fase::Pedido);
+        assert_eq!(p.avaliar(200, queda(20.0, 100.0, 100)), None);
+    }
+
+    #[test]
+    fn piso_absoluto_age_sem_projecao() {
+        // sem 20 s de dados a projeção não existe: ainda assim, 35 % é perigo
+        let mut p = politica();
+        assert_eq!(p.avaliar(10, queda(35.0, 100.0, 7)), None);
+        assert!(matches!(
+            p.avaliar(21, queda(34.0, 100.0, 18)),
+            Some(Evento::Aviso { .. })
+        ));
+    }
+
+    #[test]
+    fn queda_longa_dispara_por_tempo() {
+        let mut p = politica();
+        // 200 s sem rede e bateria em 90 %: o teto de 180 s manda desligar,
+        // mas esse gatilho precisa dos 10 s de confirmação
+        assert_eq!(p.avaliar(200, queda(90.0, 100.0, 200)), None);
+        assert!(matches!(
+            p.avaliar(211, queda(89.0, 100.0, 211)),
+            Some(Evento::Aviso { .. })
+        ));
     }
 
     #[test]
     fn volta_da_rede_cancela() {
         let mut p = politica();
-        p.avaliar(100, true, 40.0, 10);
+        p.avaliar(10, queda(80.0, 100.0, 8));
         assert!(matches!(
-            p.avaliar(120, true, 39.0, 30),
+            p.avaliar(25, queda(60.0, 100.0, 23)),
             Some(Evento::Aviso { .. })
         ));
         assert!(matches!(
-            p.avaliar(130, false, 42.0, 0),
+            p.avaliar(30, rede(62.0)),
             Some(Evento::Cancelado { .. })
         ));
-        assert_eq!(p.situacao(130).fase, Fase::Normal);
-        // e pode voltar a avisar numa nova queda
-        p.avaliar(200, true, 40.0, 5);
+        assert_eq!(p.situacao(30).fase, Fase::Normal);
+        assert_eq!(p.situacao(30).autonomia_s, None);
+        // nova queda volta a avisar
+        p.avaliar(100, queda(95.0, 100.0, 5));
         assert!(matches!(
-            p.avaliar(220, true, 38.0, 25),
-            Some(Evento::Aviso { .. })
-        ));
-    }
-
-    #[test]
-    fn tempo_em_bateria_estourado_dispara_mesmo_com_bateria_alta() {
-        let mut p = politica();
-        // 300 s sem rede e bateria em 90 % (queda longa com carga baixa)
-        assert_eq!(p.avaliar(300, true, 90.0, 295), None);
-        // o perigo é notado em 310 (305 s sem rede) e confirmado 20 s depois
-        assert_eq!(p.avaliar(310, true, 90.0, 305), None);
-        assert!(matches!(
-            p.avaliar(330, true, 89.0, 325),
+            p.avaliar(125, queda(70.0, 100.0, 25)),
             Some(Evento::Aviso { .. })
         ));
     }
@@ -309,25 +444,19 @@ mod testes {
     #[test]
     fn oscilacao_curta_nao_dispara() {
         let mut p = politica();
-        // leitura ruim de entrada por 10 s com bateria abaixo do limite
-        assert_eq!(p.avaliar(100, true, 30.0, 2), None);
-        assert_eq!(p.avaliar(110, true, 45.0, 12), None);
-        assert_eq!(p.avaliar(115, false, 100.0, 0), None); // nem chegou a avisar
-        assert_eq!(p.situacao(115).fase, Fase::Normal);
+        assert_eq!(p.avaliar(10, queda(30.0, 100.0, 3)), None);
+        assert_eq!(p.avaliar(15, rede(100.0)), None); // nem chegou a avisar
+        assert_eq!(p.situacao(15).fase, Fase::Normal);
     }
 
     #[test]
     fn sem_arquivo_configurado_avisa_que_ninguem_vai_desligar() {
         let mut p = Politica::nova(Config {
-            ligada: true,
-            bateria_minima_pct: 50.0,
-            confirma_s: 5,
-            tempo_maximo_s: 300,
             aviso_s: 0,
-            arquivo: None,
+            ..cfg()
         });
-        p.avaliar(10, true, 40.0, 5);
-        match p.avaliar(15, true, 38.0, 10) {
+        p.avaliar(10, queda(80.0, 100.0, 10));
+        match p.avaliar(20, queda(60.0, 100.0, 20)) {
             Some(Evento::Pedido { erro, .. }) => {
                 assert!(erro.unwrap().contains("NOBREAK_ARQUIVO_DESLIGAR"));
             }
@@ -338,15 +467,12 @@ mod testes {
     #[test]
     fn falha_de_escrita_aparece_no_evento() {
         let mut p = Politica::nova(Config {
-            ligada: true,
-            bateria_minima_pct: 50.0,
-            confirma_s: 5,
-            tempo_maximo_s: 300,
             aviso_s: 0,
             arquivo: Some("/caminho/que/nao/existe/desligar".to_string()),
+            ..cfg()
         });
-        p.avaliar(10, true, 40.0, 5);
-        match p.avaliar(15, true, 38.0, 10) {
+        p.avaliar(10, queda(80.0, 100.0, 10));
+        match p.avaliar(20, queda(60.0, 100.0, 20)) {
             Some(Evento::Pedido { erro, .. }) => {
                 assert!(erro.unwrap().contains("não consegui escrever"));
             }
@@ -361,26 +487,23 @@ mod testes {
         let arq = dir.join("desligar");
         let _ = std::fs::remove_file(&arq);
         let mut p = Politica::nova(Config {
-            ligada: true,
-            bateria_minima_pct: 50.0,
-            confirma_s: 5,
-            tempo_maximo_s: 300,
             aviso_s: 10,
             arquivo: Some(arq.to_string_lossy().into_owned()),
+            ..cfg()
         });
-        p.avaliar(10, true, 40.0, 5);
+        p.avaliar(10, queda(80.0, 100.0, 10));
         assert!(matches!(
-            p.avaliar(15, true, 38.0, 10),
+            p.avaliar(20, queda(60.0, 100.0, 20)),
             Some(Evento::Aviso { .. })
         ));
         assert!(matches!(
-            p.avaliar(25, true, 35.0, 20),
+            p.avaliar(30, queda(40.0, 100.0, 30)),
             Some(Evento::Pedido { .. })
         ));
         let txt = std::fs::read_to_string(&arq).unwrap();
-        assert!(txt.contains("\"bateria_pct\":35.0"));
-        assert!(txt.contains("sem_rede_s\":20"));
-        assert!(txt.starts_with("{\"t\":25,"));
+        assert!(txt.contains("\"bateria_pct\":40.0"), "{txt}");
+        assert!(txt.contains("sem_rede_s\":30"), "{txt}");
+        assert!(txt.starts_with("{\"t\":30,"), "{txt}");
         let _ = std::fs::remove_file(&arq);
     }
 }

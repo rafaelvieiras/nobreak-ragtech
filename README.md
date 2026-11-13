@@ -51,11 +51,14 @@ Sem Docker, baixe o binário em [Releases](../../releases) e rode `./nobreak-rag
 | Variável | Padrão | O que faz |
 |---|---|---|
 | `NOBREAK_PORTA` | `/dev/ragtech` | Porta serial do nobreak. Prefira `/dev/serial/by-id/usb-Ragtech_...` a `/dev/ttyACM0` (o número muda quando o aparelho reenumera) |
-| `NOBREAK_DESLIGAR` | `0` | `1` liga o desligamento do host por bateria baixa (veja `docs/instalacao.md`: o serviço grava um pedido, o host executa) |
-| `NOBREAK_DESLIGAR_BATERIA_PCT` | `50` | Bateria que dispara o desligamento |
-| `NOBREAK_DESLIGAR_TEMPO_S` | `300` | Segundos sem rede que também disparam (protege de porcentagem errada) |
-| `NOBREAK_DESLIGAR_CONFIRMA_S` | `20` | Tempo de condição contínua antes de contar como real |
-| `NOBREAK_DESLIGAR_AVISO_S` | `45` | Contagem regressiva até gravar o pedido |
+| `NOBREAK_DESLIGAR` | `0` | `1` liga o desligamento do host por bateria baixa (o serviço grava um pedido, o host executa; veja `docs/instalacao.md`) |
+| `NOBREAK_DESLIGAR_MARGEM_S` | `120` | Desliga quando a autonomia projetada (pela taxa de queda medida) cai a este valor |
+| `NOBREAK_DESLIGAR_BATERIA_PCT` | `40` | Piso absoluto de bateria, para o início da queda |
+| `NOBREAK_DESLIGAR_PISO_PCT` | `15` | Bateria considerada vazia na projeção |
+| `NOBREAK_DESLIGAR_DADOS_MINIMOS_S` | `20` | Tempo de queda necessário para projetar |
+| `NOBREAK_DESLIGAR_TEMPO_S` | `180` | Teto de tempo em bateria |
+| `NOBREAK_DESLIGAR_CONFIRMA_S` | `10` | Confirmação dos gatilhos por piso/tempo |
+| `NOBREAK_DESLIGAR_AVISO_S` | `20` | Contagem regressiva máxima (encolhe com pouca autonomia) |
 | `NOBREAK_ARQUIVO_DESLIGAR` | vazio | Arquivo do pedido de desligamento (vazio = não grava) |
 | `NOBREAK_PORTAS_ALTERNATIVAS` | vazio | Caminhos extras de serial, separados por vírgula. Desde a 0.8.0 o serviço já procura sozinho o mesmo aparelho (`idVendor:idProduct`) quando o caminho configurado não abre |
 | `NOBREAK_ESCUTA` | `0.0.0.0:8080` | Endereço do painel |

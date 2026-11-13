@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.10.0 (13/nov/2026)
+A conta do desligamento passou a usar a **carga atual**, não uma queda antiga.
+- **Autonomia projetada pela taxa real de queda** (`politica::projetar`): com pelo menos `NOBREAK_DESLIGAR_DADOS_MINIMOS_S` de queda, o serviço calcula `% por minuto` e estima quantos segundos restam até o piso da bateria. O gatilho é "autonomia projetada abaixo de `NOBREAK_DESLIGAR_MARGEM_S`", então ele se ajusta sozinho a qualquer carga.
+- **Motivo real:** em 30/out a medição foi com **3 % de carga (~36 VA)**; com o equipamento atual a carga é **35 % (~434 VA)**, cerca de 12× mais potência. Um limiar fixo de porcentagem calculado naquele teste daria minutos de folga que hoje não existem.
+- **Aviso encolhe com o tempo disponível:** a contagem é no máximo um terço da autonomia projetada, e o gatilho por projeção não espera a janela de confirmação (os dados de queda já são a confirmação). Com bateria em fim de vida, isso é a diferença entre desligar limpo e perder a máquina.
+- **Piso absoluto** (`NOBREAK_DESLIGAR_BATERIA_PCT`, padrão 40) cobre o início da queda, quando ainda não há taxa para projetar.
+- Painel: mostra a autonomia estimada durante a queda.
+
 ## 0.9.2 (13/nov/2026)
 - Formatação (`cargo fmt`) que o CI cobra. Nada muda no comportamento em relação à 0.9.1.
 

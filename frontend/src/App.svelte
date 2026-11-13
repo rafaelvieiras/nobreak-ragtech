@@ -114,7 +114,8 @@
     <section class="queda" role="alert" aria-label={t('queda.titulo')}>
       <strong>{t('queda.titulo')}</strong>
       <p>{queda ? t('queda.agora', { dur: dur(agora / 1000 - queda.inicio), pct: val(e.medidas.carga_bateria_pct, 0, '%') }) : t('queda.agora_sem_tempo', { pct: val(e.medidas.carga_bateria_pct, 0, '%') })}</p>
-      {#if saude?.ultima_queda?.autonomia_projetada_min != null}<p class="sub">{t('queda.autonomia', { min: minutos(saude.ultima_queda.autonomia_projetada_min) })}</p>{/if}
+      {#if e.desligamento?.autonomia_s != null}<p class="sub">{t('queda.agora_autonomia', { dur: dur(e.desligamento.autonomia_s) })}</p>
+      {:else if saude?.ultima_queda?.autonomia_projetada_min != null}<p class="sub">{t('queda.autonomia', { min: minutos(saude.ultima_queda.autonomia_projetada_min) })}</p>{/if}
     </section>
   {/if}
   {#if e?.desligamento && e.desligamento.fase !== 'normal'}

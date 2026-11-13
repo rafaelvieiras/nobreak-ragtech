@@ -127,22 +127,35 @@ agora com rede presente. Para testar sem desligar, crie `/etc/nobreak-desligar-s
 
 ### Escolher os limites
 
-A porcentagem sozinha engana: uma bateria cansada cai rápido no fim. Meça a sua antes de
-confiar no padrão. Na queda de 30/out/2026 do nobreak do Moon (1200 VA, 3 % de carga), a
-bateria foi de 100 % a 18 % em **508 s** — 9,7 % por minuto, autonomia total de ~8,5 min.
-Com esses números, 50 % deixam cerca de 3 min de folga:
+A porcentagem sozinha engana, por dois motivos: a bateria cai rápido no fim e a autonomia
+depende da **carga** ligada nela. Por isso o serviço projeta a autonomia pela taxa de queda
+que ele acabou de medir, e não por uma tabela fixa.
+
+Duas medições do mesmo nobreak (1200 VA) mostram por que:
+
+| Queda | Carga | Comportamento |
+|---|---|---|
+| 30/out/2026 | 3 % (~36 VA) | 100 % → 18 % em 508 s = **9,7 %/min** (~8,5 min no total) |
+| 13/nov/2026 | 35 % (~434 VA) | mesma bateria, ~12× mais potência — a autonomia cai na mesma proporção |
+
+Ou seja: uma bateria que entrega ~8,5 min com 36 VA está no fim da vida (o teórico seria
+horas). Antes de confiar em qualquer limiar, meça a sua: ligue a carga real, corte a
+energia e veja a queda.
 
 | Variável | Padrão | O que faz |
 |---|---|---|
 | `NOBREAK_DESLIGAR` | `0` | `1` arma a política. Desarmado, o serviço só registra o que faria |
-| `NOBREAK_DESLIGAR_BATERIA_PCT` | `50` | Dispara quando a bateria cai a este valor |
-| `NOBREAK_DESLIGAR_TEMPO_S` | `300` | Dispara também depois de N segundos sem rede, mesmo com bateria alta (protege de porcentagem mentirosa). `0` desliga este gatilho |
-| `NOBREAK_DESLIGAR_CONFIRMA_S` | `20` | Quanto tempo a condição precisa durar para valer (filtra oscilação de leitura) |
-| `NOBREAK_DESLIGAR_AVISO_S` | `45` | Contagem regressiva até gravar o pedido |
+| `NOBREAK_DESLIGAR_MARGEM_S` | `120` | Desliga quando a autonomia **projetada** cai a este valor |
+| `NOBREAK_DESLIGAR_BATERIA_PCT` | `40` | Piso absoluto: dispara mesmo sem projeção (início da queda) |
+| `NOBREAK_DESLIGAR_PISO_PCT` | `15` | Bateria considerada vazia na projeção (o nobreak corta antes de 0 %) |
+| `NOBREAK_DESLIGAR_DADOS_MINIMOS_S` | `20` | Tempo mínimo de queda para acreditar na taxa medida |
+| `NOBREAK_DESLIGAR_CONFIRMA_S` | `10` | Confirmação dos gatilhos por piso/tempo (a projeção dispensa) |
+| `NOBREAK_DESLIGAR_TEMPO_S` | `180` | Teto de tempo em bateria, caso a projeção diga que sobra carga |
+| `NOBREAK_DESLIGAR_AVISO_S` | `20` | Contagem regressiva máxima; encolhe para 1/3 da autonomia projetada |
 | `NOBREAK_ARQUIVO_DESLIGAR` | vazio | Onde gravar o pedido. Vazio = não grava nada (só evento e métrica) |
 
 Se a rede voltar em qualquer momento antes do pedido, a contagem é cancelada e o evento
-aparece no painel.
+aparece no painel. A autonomia estimada aparece durante a queda.
 
 ## Binário sem Docker
 

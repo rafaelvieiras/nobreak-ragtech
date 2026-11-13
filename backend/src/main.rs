@@ -153,17 +153,27 @@ fn config() -> Config {
         notificar_eventos: env("NOBREAK_NOTIFICAR_EVENTOS", ""),
         politica: politica::Config {
             ligada: env("NOBREAK_DESLIGAR", "0") == "1",
-            bateria_minima_pct: env("NOBREAK_DESLIGAR_BATERIA_PCT", "50")
+            margem_s: env("NOBREAK_DESLIGAR_MARGEM_S", "120")
+                .parse()
+                .unwrap_or(120),
+            bateria_minima_pct: env("NOBREAK_DESLIGAR_BATERIA_PCT", "40")
                 .replace(',', ".")
                 .parse()
-                .unwrap_or(50.0),
-            confirma_s: env("NOBREAK_DESLIGAR_CONFIRMA_S", "20")
+                .unwrap_or(40.0),
+            confirma_s: env("NOBREAK_DESLIGAR_CONFIRMA_S", "10")
+                .parse()
+                .unwrap_or(10),
+            tempo_maximo_s: env("NOBREAK_DESLIGAR_TEMPO_S", "180")
+                .parse()
+                .unwrap_or(180),
+            aviso_s: env("NOBREAK_DESLIGAR_AVISO_S", "20").parse().unwrap_or(20),
+            piso_pct: env("NOBREAK_DESLIGAR_PISO_PCT", "15")
+                .replace(',', ".")
+                .parse()
+                .unwrap_or(15.0),
+            dados_minimos_s: env("NOBREAK_DESLIGAR_DADOS_MINIMOS_S", "20")
                 .parse()
                 .unwrap_or(20),
-            tempo_maximo_s: env("NOBREAK_DESLIGAR_TEMPO_S", "300")
-                .parse()
-                .unwrap_or(300),
-            aviso_s: env("NOBREAK_DESLIGAR_AVISO_S", "45").parse().unwrap_or(45),
             arquivo: std::env::var("NOBREAK_ARQUIVO_DESLIGAR")
                 .ok()
                 .filter(|v| !v.trim().is_empty()),
@@ -301,6 +311,7 @@ fn coletor(
     loop {
         let r = fonte.ler_tudo();
         let mut em_bateria_s = 0u64;
+        let mut bateria_inicio_pct = 100.0f32;
         {
             let mut e = estado.lock().unwrap();
             let mut novos = Vec::new();
@@ -348,14 +359,14 @@ fn coletor(
                                 carga_pct: m.carga_saida_pct,
                             },
                         );
-                        em_bateria_s = if q.em_curso() {
-                            q.lista()
-                                .back()
-                                .map(|x| agora().saturating_sub(x.inicio))
-                                .unwrap_or(0)
+                        if q.em_curso() {
+                            if let Some(x) = q.lista().back() {
+                                em_bateria_s = agora().saturating_sub(x.inicio);
+                                bateria_inicio_pct = x.bateria_inicio_pct;
+                            }
                         } else {
-                            0
-                        };
+                            em_bateria_s = 0;
+                        }
                         if let Some(p) = &cfg.arquivo_quedas {
                             quedas::anexar_arquivo(p, &q.drenar());
                         } else {
@@ -389,15 +400,20 @@ fn coletor(
                     let t = agora();
                     let evento = pol.avaliar(
                         t,
-                        e.status
-                            .as_deref()
-                            .map(|x| x.starts_with("OB"))
-                            .unwrap_or(false),
-                        e.medidas
-                            .as_ref()
-                            .map(|m| m.carga_bateria_pct)
-                            .unwrap_or(100.0),
-                        em_bateria_s,
+                        politica::Leitura {
+                            em_queda: e
+                                .status
+                                .as_deref()
+                                .map(|x| x.starts_with("OB"))
+                                .unwrap_or(false),
+                            bateria_pct: e
+                                .medidas
+                                .as_ref()
+                                .map(|m| m.carga_bateria_pct)
+                                .unwrap_or(100.0),
+                            bateria_inicio_pct,
+                            em_bateria_s,
+                        },
                     );
                     e.desligamento = Some(pol.situacao(t));
                     if let Some(evento) = evento {
