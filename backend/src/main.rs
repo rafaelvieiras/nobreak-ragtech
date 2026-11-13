@@ -6,15 +6,16 @@ mod leitura;
 mod longa;
 mod modelos;
 mod notificar;
+mod politica;
 mod protocolo;
 mod quedas;
 
-use alarmes::Alarme;
+use alarmes::{Alarme, Gravidade};
 use fonte::Fonte;
 use historico::Historico;
 use leitura::{decodificar, status_nut, Brutos, Flags, InfoModelo, Medidas};
 use longa::SerieLonga;
-use notificar::{Destino, Detector, Leitura, Notificador};
+use notificar::{Destino, Detector, Leitura, Notif, Notificador};
 use quedas::Quedas;
 use rust_embed::RustEmbed;
 use serde::Serialize;
@@ -48,6 +49,8 @@ struct Estado {
     calibracao_0xf3: Option<u8>,
     capacidade_0x136: Option<u8>,
     osc_0x202: Option<[u8; 2]>,
+    /// Estado da política de desligamento por bateria baixa.
+    desligamento: Option<politica::Situacao>,
 }
 
 #[derive(Clone)]
@@ -80,6 +83,8 @@ struct Config {
     ntfy_token: Option<String>,
     notificar_nome: String,
     notificar_eventos: String,
+    /// Desligamento do host por bateria baixa (`NOBREAK_DESLIGAR*`).
+    politica: politica::Config,
 }
 
 fn env(chave: &str, padrao: &str) -> String {
@@ -146,6 +151,23 @@ fn config() -> Config {
             .filter(|v| !v.trim().is_empty()),
         notificar_nome: env("NOBREAK_NOTIFICAR_NOME", "Nobreak"),
         notificar_eventos: env("NOBREAK_NOTIFICAR_EVENTOS", ""),
+        politica: politica::Config {
+            ligada: env("NOBREAK_DESLIGAR", "0") == "1",
+            bateria_minima_pct: env("NOBREAK_DESLIGAR_BATERIA_PCT", "50")
+                .replace(',', ".")
+                .parse()
+                .unwrap_or(50.0),
+            confirma_s: env("NOBREAK_DESLIGAR_CONFIRMA_S", "20")
+                .parse()
+                .unwrap_or(20),
+            tempo_maximo_s: env("NOBREAK_DESLIGAR_TEMPO_S", "300")
+                .parse()
+                .unwrap_or(300),
+            aviso_s: env("NOBREAK_DESLIGAR_AVISO_S", "45").parse().unwrap_or(45),
+            arquivo: std::env::var("NOBREAK_ARQUIVO_DESLIGAR")
+                .ok()
+                .filter(|v| !v.trim().is_empty()),
+        },
     }
 }
 
@@ -275,8 +297,10 @@ fn coletor(
     } else {
         Fonte::serial_com(cfg.porta.clone(), cfg.portas_alternativas.clone(), cfg.id)
     };
+    let mut pol = politica::Politica::nova(cfg.politica.clone());
     loop {
         let r = fonte.ler_tudo();
+        let mut em_bateria_s = 0u64;
         {
             let mut e = estado.lock().unwrap();
             let mut novos = Vec::new();
@@ -324,6 +348,14 @@ fn coletor(
                                 carga_pct: m.carga_saida_pct,
                             },
                         );
+                        em_bateria_s = if q.em_curso() {
+                            q.lista()
+                                .back()
+                                .map(|x| agora().saturating_sub(x.inicio))
+                                .unwrap_or(0)
+                        } else {
+                            0
+                        };
                         if let Some(p) = &cfg.arquivo_quedas {
                             quedas::anexar_arquivo(p, &q.drenar());
                         } else {
@@ -350,6 +382,53 @@ fn coletor(
                             );
                             v.extend(n.detector.saude(t, &saude.avisos));
                             n.enviar(v);
+                        }
+                    }
+                    // Política de desligamento por bateria baixa. Só roda com leitura boa:
+                    // leitura velha nunca desliga máquina.
+                    let t = agora();
+                    let evento = pol.avaliar(
+                        t,
+                        e.status
+                            .as_deref()
+                            .map(|x| x.starts_with("OB"))
+                            .unwrap_or(false),
+                        e.medidas
+                            .as_ref()
+                            .map(|m| m.carga_bateria_pct)
+                            .unwrap_or(100.0),
+                        em_bateria_s,
+                    );
+                    e.desligamento = Some(pol.situacao(t));
+                    if let Some(evento) = evento {
+                        let (titulo, texto, gravidade) = match &evento {
+                            politica::Evento::Aviso { restante_s, motivo } => (
+                                "Vai desligar".to_string(),
+                                format!(
+                                    "{motivo}. Desligando em {restante_s}s se a rede não voltar."
+                                ),
+                                Gravidade::Erro,
+                            ),
+                            politica::Evento::Pedido { motivo } => (
+                                "Desligamento pedido".to_string(),
+                                format!("{motivo}. Pedido de desligamento gravado."),
+                                Gravidade::Erro,
+                            ),
+                            politica::Evento::Cancelado { motivo } => (
+                                "Desligamento cancelado".to_string(),
+                                motivo.clone(),
+                                Gravidade::Info,
+                            ),
+                        };
+                        println!("desligamento: {titulo} — {texto}");
+                        if let Some(n) = notif.as_mut() {
+                            n.enviar(vec![Notif {
+                                evento: "desligamento",
+                                gravidade,
+                                titulo,
+                                texto,
+                                t,
+                            }]);
                         }
                     }
                 }
@@ -438,6 +517,28 @@ fn metricas(e: &Estado, q: &Quedas, cfg: &Config) -> String {
             "segundos_sem_leitura",
             "segundos desde a última leitura boa (0 = lendo agora)",
             0.0,
+        );
+    }
+    if let Some(d) = &e.desligamento {
+        let fase = match d.fase {
+            politica::Fase::Normal => 0.0,
+            politica::Fase::Aviso => 1.0,
+            politica::Fase::Pedido => 2.0,
+        };
+        g(
+            "desligamento_armado",
+            "1 se a política de desligar por bateria baixa está ligada",
+            if d.armado { 1.0 } else { 0.0 },
+        );
+        g(
+            "desligamento_fase",
+            "0 normal, 1 aviso (contagem), 2 pedido gravado",
+            fase,
+        );
+        g(
+            "desligamento_restante_segundos",
+            "segundos até o pedido quando em aviso (0 fora do aviso)",
+            d.restante_s.unwrap_or(0) as f64,
         );
     }
     if let Some(st) = &e.status {

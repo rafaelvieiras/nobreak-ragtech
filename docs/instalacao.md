@@ -97,6 +97,53 @@ Para guardar também as quedas de energia (resumo de 24 h, 7 e 30 dias), use `-e
 
 O arquivo de eventos guarda no máximo ~128 KB (os eventos mais antigos são descartados).
 
+## Desligar o computador quando a bateria acaba
+
+O serviço **não desliga nada sozinho**: ele grava um pedido num arquivo e quem desliga é um
+serviço do sistema. Isso mantém o container `read_only`, sem privilégio e sem o socket do
+Docker — quem decide desligar a máquina é o host.
+
+```bash
+docker run ... --user 1000:1000 \
+  -v /var/lib/nobreak-ragtech:/dados \
+  -e NOBREAK_DESLIGAR=1 \
+  -e NOBREAK_ARQUIVO_DESLIGAR=/dados/desligar \
+  ghcr.io/rafaelvieiras/nobreak-ragtech:latest
+```
+
+No host, um `path unit` vigia esse arquivo e executa o desligamento com as travas:
+
+```ini
+# /etc/systemd/system/nobreak-shutdown.path
+[Path]
+PathExists=/var/lib/nobreak-ragtech/desligar
+Unit=nobreak-shutdown.service
+```
+
+O script (`nobreak-shutdown.sh`, em `moon/systemd/` do repo `homelab`) reconfere tudo antes
+de desligar e cancela o pedido se: o arquivo de desarme existir
+(`/etc/nobreak-desligar-desarmado`), o pedido tiver mais de 180 s, ou o nobreak responder
+agora com rede presente. Para testar sem desligar, crie `/etc/nobreak-desligar-seco`.
+
+### Escolher os limites
+
+A porcentagem sozinha engana: uma bateria cansada cai rápido no fim. Meça a sua antes de
+confiar no padrão. Na queda de 30/out/2026 do nobreak do Moon (1200 VA, 3 % de carga), a
+bateria foi de 100 % a 18 % em **508 s** — 9,7 % por minuto, autonomia total de ~8,5 min.
+Com esses números, 50 % deixam cerca de 3 min de folga:
+
+| Variável | Padrão | O que faz |
+|---|---|---|
+| `NOBREAK_DESLIGAR` | `0` | `1` arma a política. Desarmado, o serviço só registra o que faria |
+| `NOBREAK_DESLIGAR_BATERIA_PCT` | `50` | Dispara quando a bateria cai a este valor |
+| `NOBREAK_DESLIGAR_TEMPO_S` | `300` | Dispara também depois de N segundos sem rede, mesmo com bateria alta (protege de porcentagem mentirosa). `0` desliga este gatilho |
+| `NOBREAK_DESLIGAR_CONFIRMA_S` | `20` | Quanto tempo a condição precisa durar para valer (filtra oscilação de leitura) |
+| `NOBREAK_DESLIGAR_AVISO_S` | `45` | Contagem regressiva até gravar o pedido |
+| `NOBREAK_ARQUIVO_DESLIGAR` | vazio | Onde gravar o pedido. Vazio = não grava nada (só evento e métrica) |
+
+Se a rede voltar em qualquer momento antes do pedido, a contagem é cancelada e o evento
+aparece no painel.
+
 ## Binário sem Docker
 
 Baixe o `.tar.gz` da sua arquitetura em [Releases](../../releases), confira o `SHA256SUMS` e rode:

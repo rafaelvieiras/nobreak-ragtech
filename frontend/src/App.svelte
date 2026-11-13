@@ -117,6 +117,15 @@
       {#if saude?.ultima_queda?.autonomia_projetada_min != null}<p class="sub">{t('queda.autonomia', { min: minutos(saude.ultima_queda.autonomia_projetada_min) })}</p>{/if}
     </section>
   {/if}
+  {#if e?.desligamento && e.desligamento.fase !== 'normal'}
+    <div class="aviso-box erro-box" role="alert">
+      {#if e.desligamento.fase === 'aviso' && e.desligamento.restante_s != null}
+        {t('desl.aviso', { s: dur(e.desligamento.restante_s), motivo: e.desligamento.motivo ?? '' })}
+      {:else}
+        {t('desl.pedido', { motivo: e.desligamento.motivo ?? '' })}
+      {/if}
+    </div>
+  {/if}
   {#each alarmes as a}
     <div class="aviso-box" class:erro-box={a.gravidade === 'erro'} role={a.gravidade === 'erro' ? 'alert' : 'status'}>
       <span class="sr">{t('grav.' + a.gravidade)}: </span>{a.gravidade === 'erro' ? '⚠' : '•'} {textoAlarme(a)}

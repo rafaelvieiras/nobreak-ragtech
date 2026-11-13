@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.9.0 (13/nov/2026)
+Desliga o computador antes de a bateria acabar.
+- **Política de desligamento** (`backend/src/politica.rs`): age só com leitura boa e só em queda de energia. Dois gatilhos — bateria abaixo de `NOBREAK_DESLIGAR_BATERIA_PCT` **ou** `NOBREAK_DESLIGAR_TEMPO_S` segundos sem rede (proteção para quando a porcentagem mente) — exigem `NOBREAK_DESLIGAR_CONFIRMA_S` de condição contínua, depois `NOBREAK_DESLIGAR_AVISO_S` de contagem regressiva antes do pedido. Voltar a rede cancela e gera evento.
+- **O padrão é desarmado** (`NOBREAK_DESLIGAR=0`): atualizar o serviço não passa a desligar máquina de ninguém sem aviso.
+- **O container não desliga nada**: ele grava um JSON em `NOBREAK_ARQUIVO_DESLIGAR` (ex.: `/var/lib/nobreak-ragtech/desligar`) e quem desliga é um serviço do host (`nobreak-shutdown.path`), que reconfere idade do pedido e o estado do nobreak antes de agir. Assim o container continua `read_only`, sem privilégio e sem socket do Docker.
+- **Números vindos de medição** (queda real de 30/out: 100 % → 18 % em 508 s, 9,7 %/min, autonomia total ~8,5 min): o padrão é 50 %, com 45 s de aviso — a 25 % restariam ~45 s, tempo insuficiente para desligar com folga.
+- Painel: faixa vermelha com a contagem e o motivo, em português e inglês. Métricas novas: `nobreak_desligamento_armado`, `nobreak_desligamento_fase`, `nobreak_desligamento_restante_segundos`.
+- Notificação de aviso e de pedido de desligamento pelos mesmos destinos (webhook/ntfy), quando configurados.
+
 ## 0.8.0 (12/nov/2026)
 A serial do nobreak pode trocar de nome sozinha, e isso parava o serviço em silêncio.
 - **Caminho alternativo automático** (`backend/src/fonte.rs`): quando o caminho de `NOBREAK_PORTA` não abre, o serviço tenta o último caminho que funcionou, os de `NOBREAK_PORTAS_ALTERNATIVAS` e por fim qualquer serial com o **mesmo `idVendor:idProduct`** do aparelho que já leu (lido do sysfs). Sem histórico de leitura ele não adivinha — abrir um serial alheio (coordenador Zigbee, modem) e escrever um quadro nele seria pior que ficar desconectado.

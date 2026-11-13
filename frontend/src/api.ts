@@ -12,6 +12,8 @@ export interface Estado {
   modelo: { indice: number; nome: string; reconhecido: boolean } | null
   status: string | null; medidas: Medidas | null; flags: Flags | null; alarmes: Alarme[]
   registradores_hex: string | null; calibracao_0xf3: number | null; capacidade_0x136: number | null; osc_0x202: [number, number] | null
+  sem_leitura_desde: number | null
+  desligamento: { armado: boolean; fase: 'normal' | 'aviso' | 'pedido'; motivo: string | null; restante_s: number | null } | null
 }
 
 export async function buscarEstado(): Promise<Estado> {

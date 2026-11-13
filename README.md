@@ -51,6 +51,12 @@ Sem Docker, baixe o binário em [Releases](../../releases) e rode `./nobreak-rag
 | Variável | Padrão | O que faz |
 |---|---|---|
 | `NOBREAK_PORTA` | `/dev/ragtech` | Porta serial do nobreak. Prefira `/dev/serial/by-id/usb-Ragtech_...` a `/dev/ttyACM0` (o número muda quando o aparelho reenumera) |
+| `NOBREAK_DESLIGAR` | `0` | `1` liga o desligamento do host por bateria baixa (veja `docs/instalacao.md`: o serviço grava um pedido, o host executa) |
+| `NOBREAK_DESLIGAR_BATERIA_PCT` | `50` | Bateria que dispara o desligamento |
+| `NOBREAK_DESLIGAR_TEMPO_S` | `300` | Segundos sem rede que também disparam (protege de porcentagem errada) |
+| `NOBREAK_DESLIGAR_CONFIRMA_S` | `20` | Tempo de condição contínua antes de contar como real |
+| `NOBREAK_DESLIGAR_AVISO_S` | `45` | Contagem regressiva até gravar o pedido |
+| `NOBREAK_ARQUIVO_DESLIGAR` | vazio | Arquivo do pedido de desligamento (vazio = não grava) |
 | `NOBREAK_PORTAS_ALTERNATIVAS` | vazio | Caminhos extras de serial, separados por vírgula. Desde a 0.8.0 o serviço já procura sozinho o mesmo aparelho (`idVendor:idProduct`) quando o caminho configurado não abre |
 | `NOBREAK_ESCUTA` | `0.0.0.0:8080` | Endereço do painel |
 | `NOBREAK_INTERVALO_S` | `5` | Segundos entre leituras |
