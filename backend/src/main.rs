@@ -390,6 +390,7 @@ fn coletor(
                                 Some(m.temperatura_c),
                                 cfg.bateria_instalada,
                                 t,
+                                Some(m.carga_saida_pct),
                             );
                             v.extend(n.detector.saude(t, &saude.avisos));
                             n.enviar(v);
@@ -581,12 +582,31 @@ fn metricas(e: &Estado, q: &Quedas, cfg: &Config) -> String {
         e.medidas.as_ref().map(|m| m.temperatura_c),
         cfg.bateria_instalada,
         agora(),
+        e.medidas.as_ref().map(|m| m.carga_saida_pct),
     );
     g(
         "bateria_avisos",
         "quantidade de avisos de saúde da bateria",
         saude.avisos.len() as f64,
     );
+    if let Some(m) = saude
+        .ultima_queda
+        .as_ref()
+        .and_then(|x| x.autonomia_projetada_min)
+    {
+        g(
+            "autonomia_medida_min",
+            "autonomia projetada pela última queda medida, na carga daquela queda",
+            m as f64,
+        );
+    }
+    if let Some(m) = saude.autonomia_na_carga_atual_min {
+        g(
+            "autonomia_carga_atual_min",
+            "autonomia estimada com a carga ligada agora",
+            m as f64,
+        );
+    }
     if let Some(v) = saude.tensao_repouso_v {
         g(
             "bateria_tensao_repouso_volts",
@@ -670,6 +690,12 @@ fn servir(
                 temp,
                 cfg.bateria_instalada,
                 agora(),
+                estado
+                    .lock()
+                    .unwrap()
+                    .medidas
+                    .as_ref()
+                    .map(|m| m.carga_saida_pct),
             );
             json(serde_json::to_string(&s).unwrap(), 200)
         }

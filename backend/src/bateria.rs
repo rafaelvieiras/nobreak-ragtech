@@ -86,6 +86,10 @@ pub struct Saude {
     /// Média da autonomia projetada nas quedas anteriores à última.
     pub autonomia_anterior_min: Option<f32>,
     pub recarregando: bool,
+    /// Carga na saída agora (% da potência nominal).
+    pub carga_atual_pct: Option<f32>,
+    /// Autonomia estimada **com a carga de agora**, não com a da última queda.
+    pub autonomia_na_carga_atual_min: Option<f32>,
     pub avisos: Vec<Aviso>,
 }
 
@@ -116,10 +120,12 @@ pub fn avaliar(
     temperatura_c: Option<f32>,
     instalada: Option<u64>,
     agora: u64,
+    carga_atual_pct: Option<f32>,
 ) -> Saude {
     let mut s = Saude {
         temperatura_c,
         recarregando: quedas.recarregando(),
+        carga_atual_pct,
         ..Saude::default()
     };
     let mut av = Vec::new();
@@ -162,21 +168,33 @@ pub fn avaliar(
     if let Some(ultima) = analisaveis.first() {
         let a = analise(ultima);
         let nominal = s.nominal_v.unwrap_or(12) as f32 / 12.0;
-        if let Some(m) = a.autonomia_projetada_min {
+        // A autonomia medida vale para a carga daquela queda. A carga de hoje pode ser muito
+        // maior (3% em 30/out contra 35% em 13/nov): sem reescalar, o número e os avisos
+        // mentem para cima e a bateria "parece" melhor do que é.
+        let mut onde = String::new();
+        if let (Some(projetada), Some(carga_queda), Some(carga_agora)) =
+            (a.autonomia_projetada_min, a.carga_max_pct, carga_atual_pct)
+        {
+            if carga_queda > 0.5 && carga_agora > 0.5 {
+                s.autonomia_na_carga_atual_min = Some(projetada * carga_queda / carga_agora);
+                onde = format!(
+                    " com a carga atual de {carga_agora:.0}% (medida em {carga_queda:.0}%)"
+                );
+            }
+        }
+        if let Some(m) = s.autonomia_na_carga_atual_min.or(a.autonomia_projetada_min) {
             if m < 3.0 {
                 av.push(aviso(
                     "autonomia_critica",
                     Gravidade::Erro,
-                    format!(
-                        "Autonomia projetada de {m:.0} min na última queda: bateria muito fraca"
-                    ),
+                    format!("Autonomia de {m:.1} min{onde}: bateria muito fraca"),
                     &[("m", m as f64)],
                 ));
             } else if m < 10.0 {
                 av.push(aviso(
                     "autonomia_curta",
                     Gravidade::Aviso,
-                    format!("Autonomia projetada de {m:.0} min na última queda"),
+                    format!("Autonomia de {m:.0} min{onde}"),
                     &[("m", m as f64)],
                 ));
             }
@@ -342,25 +360,25 @@ mod testes {
 
     #[test]
     fn tensao_de_repouso() {
-        assert!(codigos(&avaliar(&repouso(13.4), None, None, 0)).is_empty());
+        assert!(codigos(&avaliar(&repouso(13.4), None, None, 0, None)).is_empty());
         assert_eq!(
-            codigos(&avaliar(&repouso(12.8), None, None, 0)),
+            codigos(&avaliar(&repouso(12.8), None, None, 0, None)),
             ["repouso_baixo"]
         );
         assert_eq!(
-            codigos(&avaliar(&repouso(12.0), None, None, 0)),
+            codigos(&avaliar(&repouso(12.0), None, None, 0, None)),
             ["repouso_muito_baixo"]
         );
         assert_eq!(
-            codigos(&avaliar(&repouso(15.0), None, None, 0)),
+            codigos(&avaliar(&repouso(15.0), None, None, 0, None)),
             ["repouso_alto"]
         );
         // 24 V: limites dobram
-        let s = avaliar(&repouso(26.8), None, None, 0);
+        let s = avaliar(&repouso(26.8), None, None, 0, None);
         assert_eq!(s.nominal_v, Some(24));
         assert!(s.avisos.is_empty());
         assert_eq!(
-            codigos(&avaliar(&repouso(25.6), None, None, 0)),
+            codigos(&avaliar(&repouso(25.6), None, None, 0, None)),
             ["repouso_baixo"]
         );
     }
@@ -369,21 +387,42 @@ mod testes {
     fn autonomia_projetada() {
         let mut q = Quedas::default();
         queda(&mut q, 1000, 600, 20.0, 0.5); // 10 min para 20% => 50 min de 100% a 0
-        let s = avaliar(&q, None, None, 5000);
+        let s = avaliar(&q, None, None, 5000, None);
         let a = s.ultima_queda.unwrap();
         assert!((a.autonomia_projetada_min.unwrap() - 50.0).abs() < 0.5);
         assert!(s.avisos.is_empty());
     }
 
     #[test]
+    fn autonomia_min_queda_reescalada_pela_carga_de_hoje() {
+        // Queda medida com 12% de carga: 10 min para perder 20% => 50 min de 100 a 0.
+        let mut q = Quedas::default();
+        queda(&mut q, 1000, 600, 20.0, 0.5);
+        // com a mesma carga de 12% nada muda
+        let s = avaliar(&q, None, None, 5000, Some(12.0));
+        assert!((s.autonomia_na_carga_atual_min.unwrap() - 50.0).abs() < 1.0);
+        assert!(s.avisos.iter().all(|a| a.codigo != "autonomia_critica"));
+        // com 40% de carga a autonomia cai na proporção (50 * 12/40 = 15 min)
+        let s = avaliar(&q, None, None, 5000, Some(40.0));
+        assert!((s.autonomia_na_carga_atual_min.unwrap() - 15.0).abs() < 1.0);
+        // com 100% de carga, a projeção reescalada vira perigo e vira aviso crítico
+        let s = avaliar(&q, None, None, 5000, Some(300.0));
+        assert!(s.autonomia_na_carga_atual_min.unwrap() < 3.0);
+        assert!(s.avisos.iter().any(|a| a.codigo == "autonomia_critica"));
+    }
+
+    #[test]
     fn autonomia_curta_e_critica() {
         let mut q = Quedas::default();
         queda(&mut q, 1000, 49, 16.0, 0.4); // ~5 min
-        assert_eq!(codigos(&avaliar(&q, None, None, 5000)), ["autonomia_curta"]);
+        assert_eq!(
+            codigos(&avaliar(&q, None, None, 5000, None)),
+            ["autonomia_curta"]
+        );
         let mut q = Quedas::default();
         queda(&mut q, 1000, 40, 40.0, 0.4); // 1,7 min
         assert_eq!(
-            codigos(&avaliar(&q, None, None, 5000)),
+            codigos(&avaliar(&q, None, None, 5000, None)),
             ["autonomia_critica"]
         );
     }
@@ -393,7 +432,7 @@ mod testes {
         let mut q = Quedas::default();
         queda(&mut q, 1000, 20, 30.0, 0.4); // curta demais
         queda(&mut q, 2000, 600, 2.0, 0.1); // perdeu menos de 5 pontos
-        let s = avaliar(&q, None, None, 5000);
+        let s = avaliar(&q, None, None, 5000, None);
         assert!(s.ultima_queda.is_none());
         assert!(s.avisos.is_empty());
     }
@@ -404,20 +443,20 @@ mod testes {
         queda(&mut q, 1000, 1200, 20.0, 0.5); // 100 min
         queda(&mut q, 5000, 1200, 20.0, 0.5); // 100 min
         queda(&mut q, 9000, 600, 20.0, 1.8); // 50 min, tensão afunda
-        let c = codigos(&avaliar(&q, None, None, 20_000));
+        let c = codigos(&avaliar(&q, None, None, 20_000, None));
         assert_eq!(c, ["autonomia_caindo", "tensao_afunda"]);
     }
 
     #[test]
     fn temperatura() {
         let q = Quedas::default();
-        assert!(avaliar(&q, Some(51.0), None, 0).avisos.is_empty());
+        assert!(avaliar(&q, Some(51.0), None, 0, None).avisos.is_empty());
         assert_eq!(
-            codigos(&avaliar(&q, Some(62.0), None, 0)),
+            codigos(&avaliar(&q, Some(62.0), None, 0, None)),
             ["temperatura_alta"]
         );
         assert_eq!(
-            codigos(&avaliar(&q, Some(75.0), None, 0)),
+            codigos(&avaliar(&q, Some(75.0), None, 0, None)),
             ["temperatura_critica"]
         );
     }
@@ -427,12 +466,14 @@ mod testes {
         let q = Quedas::default();
         let inst = parse_data("2023-01-01").unwrap();
         let em = |anos: f32| inst + (anos * ANO_S as f32) as u64;
-        assert!(avaliar(&q, None, Some(inst), em(2.0)).avisos.is_empty());
+        assert!(avaliar(&q, None, Some(inst), em(2.0), None)
+            .avisos
+            .is_empty());
         assert_eq!(
-            codigos(&avaliar(&q, None, Some(inst), em(3.2))),
+            codigos(&avaliar(&q, None, Some(inst), em(3.2), None)),
             ["bateria_envelhecendo"]
         );
-        let s = avaliar(&q, None, Some(inst), em(4.5));
+        let s = avaliar(&q, None, Some(inst), em(4.5), None);
         assert_eq!(codigos(&s), ["bateria_velha"]);
         assert!(s.idade_dias.unwrap() > 1600);
         // o cliente traduz pelo código e pelos valores, sem depender do texto em português

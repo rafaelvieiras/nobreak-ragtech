@@ -21,9 +21,11 @@
     <table class="humano">
       <tbody>
         <tr><th scope="row">{t('b.repouso')}</th><td>{dados.tensao_repouso_v === null ? t('b.medindo') : t('b.nominal', { v: val(dados.tensao_repouso_v, 2, 'V'), n: val(dados.nominal_v, 0, 'V') })}</td></tr>
+        <tr><th scope="row">{t('b.carga_atual')}</th><td>{val(dados.carga_atual_pct, 0, '%')}</td></tr>
         <tr><th scope="row">{t('b.temp')}</th><td>{val(dados.temperatura_c, 0, '°C')}</td></tr>
         <tr><th scope="row">{t('b.idade')}</th><td>{idade(dados.idade_dias)}</td></tr>
         {#if dados.ultima_queda}
+          <tr><th scope="row">{t('b.autonomia_hoje')}</th><td>{dados.autonomia_na_carga_atual_min !== null ? minutos(dados.autonomia_na_carga_atual_min) : t('b.sem_dado')}</td></tr>
           <tr><th scope="row">{t('b.autonomia')}</th><td>{minutos(dados.ultima_queda.autonomia_projetada_min)}{dados.autonomia_anterior_min !== null ? t('b.anterior', { v: minutos(dados.autonomia_anterior_min) }) : ''}</td></tr>
           <tr><th scope="row">{t('b.afundou')}</th><td>{val(dados.ultima_queda.queda_tensao_v, 1, 'V')}</td></tr>
           <tr><th scope="row">{t('b.cargamax')}</th><td>{val(dados.ultima_queda.carga_max_pct, 0, '%')}</td></tr>

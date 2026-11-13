@@ -60,7 +60,8 @@ export interface AnaliseQueda {
 }
 export interface Saude {
   tensao_repouso_v: number | null; nominal_v: number | null; temperatura_c: number | null; idade_dias: number | null
-  ultima_queda: AnaliseQueda | null; autonomia_anterior_min: number | null; recarregando: boolean; avisos: AvisoBateria[]
+  ultima_queda: AnaliseQueda | null; autonomia_anterior_min: number | null; recarregando: boolean
+  carga_atual_pct: number | null; autonomia_na_carga_atual_min: number | null; avisos: AvisoBateria[]
 }
 export const buscarBateria = () => get<Saude>('/api/bateria')
 

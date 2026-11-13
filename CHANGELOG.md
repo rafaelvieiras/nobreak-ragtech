@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.11.0 (13/nov/2026)
+A autonomia passa a ser mostrada com a carga que está ligada **agora**.
+- **`/api/bateria`**: novos campos `carga_atual_pct` e `autonomia_na_carga_atual_min`, que reescalam a autonomia medida na última queda pela razão entre a carga daquela queda e a carga atual. Os avisos de autonomia (`autonomia_critica`/`autonomia_curta`) passaram a usar esse número — antes um teste com 3 % de carga rendia "50 min" mesmo com 35 % de carga ligada, o que dava falsa segurança.
+- **Painel**: a seção de bateria mostra "Carga ligada agora" e "Autonomia com a carga de agora" ao lado da autonomia medida.
+- **Métricas**: `nobreak_autonomia_medida_min` e `nobreak_autonomia_carga_atual_min`.
+
 ## 0.10.0 (13/nov/2026)
 A conta do desligamento passou a usar a **carga atual**, não uma queda antiga.
 - **Autonomia projetada pela taxa real de queda** (`politica::projetar`): com pelo menos `NOBREAK_DESLIGAR_DADOS_MINIMOS_S` de queda, o serviço calcula `% por minuto` e estima quantos segundos restam até o piso da bateria. O gatilho é "autonomia projetada abaixo de `NOBREAK_DESLIGAR_MARGEM_S`", então ele se ajusta sozinho a qualquer carga.
