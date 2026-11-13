@@ -32,10 +32,14 @@ ligado por USB num servidor, NAS ou Raspberry Pi, e o software oficial não roda
 ```bash
 docker run -d --name nobreak-ragtech --restart unless-stopped \
   -p 8088:8080 \
-  --device /dev/ttyACM0:/dev/ragtech \
-  -e NOBREAK_PORTA=/dev/ragtech \
+  -v /dev:/dev --device-cgroup-rule='c 166:* rmw' \
+  -e NOBREAK_PORTA=/dev/serial/by-id/usb-Ragtech_Sistemas_de_Energia_USB_Serial_Port-if00 \
   ghcr.io/rafaelvieiras/nobreak-ragtech:latest
 ```
+
+O `by-id` não muda de nome quando o adaptador USB reenumera (`ttyACM0` → `ttyACM1`); o
+`by-id` também não. Não use `--device /dev/ttyACM0`: é um nó estático que morre na
+primeira reenumeração.
 
 Abra `http://IP-DO-SERVIDOR:8088`. Também há um [`compose.yaml`](compose.yaml) de exemplo.
 Guia completo, permissões da porta e integração com NUT: [`docs/instalacao.md`](docs/instalacao.md).
@@ -46,7 +50,8 @@ Sem Docker, baixe o binário em [Releases](../../releases) e rode `./nobreak-rag
 
 | Variável | Padrão | O que faz |
 |---|---|---|
-| `NOBREAK_PORTA` | `/dev/ragtech` | Porta serial do nobreak (`/dev/ttyACM0`, `/dev/ttyUSB0`...) |
+| `NOBREAK_PORTA` | `/dev/ragtech` | Porta serial do nobreak. Prefira `/dev/serial/by-id/usb-Ragtech_...` a `/dev/ttyACM0` (o número muda quando o aparelho reenumera) |
+| `NOBREAK_PORTAS_ALTERNATIVAS` | vazio | Caminhos extras de serial, separados por vírgula. Desde a 0.8.0 o serviço já procura sozinho o mesmo aparelho (`idVendor:idProduct`) quando o caminho configurado não abre |
 | `NOBREAK_ESCUTA` | `0.0.0.0:8080` | Endereço do painel |
 | `NOBREAK_INTERVALO_S` | `5` | Segundos entre leituras |
 | `NOBREAK_ID` | `A` | Nibble de endereço do quadro (hex). O padrão serve para a maioria |

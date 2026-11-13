@@ -32,6 +32,9 @@ struct Estado {
     conectado: bool,
     ultimo_erro: Option<String>,
     atualizado_em: Option<u64>,
+    /// Quando começou a sequência atual de falhas de leitura (segundos Unix). `null`
+    /// quando está lendo. Diz há quanto tempo o nobreak está mudo.
+    sem_leitura_desde: Option<u64>,
     falhas_seguidas: u32,
     leituras_ok: u64,
     modelo: Option<InfoModelo>,
@@ -50,6 +53,8 @@ struct Estado {
 #[derive(Clone)]
 struct Config {
     porta: String,
+    /// Caminhos extras de serial (`NOBREAK_PORTAS_ALTERNATIVAS`, separados por vírgula).
+    portas_alternativas: Vec<String>,
     escuta: String,
     intervalo: Duration,
     id: u8,
@@ -87,6 +92,11 @@ fn env(chave: &str, padrao: &str) -> String {
 fn config() -> Config {
     Config {
         porta: env("NOBREAK_PORTA", "/dev/ragtech"),
+        portas_alternativas: env("NOBREAK_PORTAS_ALTERNATIVAS", "")
+            .split(',')
+            .map(|x| x.trim().to_string())
+            .filter(|x| !x.is_empty())
+            .collect(),
         escuta: env("NOBREAK_ESCUTA", "0.0.0.0:8080"),
         intervalo: Duration::from_secs(env("NOBREAK_INTERVALO_S", "5").parse().unwrap_or(5).max(1)),
         id: u8::from_str_radix(env("NOBREAK_ID", "A").trim_start_matches("0x"), 16).unwrap_or(0xA)
@@ -263,7 +273,7 @@ fn coletor(
     let mut fonte = if cfg.simular {
         Fonte::Simulada(0)
     } else {
-        Fonte::serial(cfg.porta.clone(), cfg.id)
+        Fonte::serial_com(cfg.porta.clone(), cfg.portas_alternativas.clone(), cfg.id)
     };
     loop {
         let r = fonte.ler_tudo();
@@ -273,6 +283,7 @@ fn coletor(
             match r {
                 Ok(b) => {
                     aplicar(&mut e, &b, cfg.fator_vbat);
+                    e.sem_leitura_desde = None;
                     {
                         let mut h = hist.lock().unwrap();
                         novos.extend(h.conexao(agora(), true, ""));
@@ -343,6 +354,9 @@ fn coletor(
                     }
                 }
                 Err(msg) => {
+                    if e.falhas_seguidas == 0 {
+                        e.sem_leitura_desde = Some(agora());
+                    }
                     e.falhas_seguidas += 1;
                     e.ultimo_erro = Some(msg);
                     // tolera falhas isoladas; só marca desconectado após 3 seguidas
@@ -411,6 +425,19 @@ fn metricas(e: &Estado, q: &Quedas, cfg: &Config) -> String {
             "contagem_regressiva_segundos",
             "contador regressivo de desligamento (0 = parado)",
             m.contagem_regressiva_s as f64,
+        );
+    }
+    if let Some(t) = e.sem_leitura_desde {
+        g(
+            "segundos_sem_leitura",
+            "segundos desde a última leitura boa (0 = lendo agora)",
+            agora().saturating_sub(t) as f64,
+        );
+    } else {
+        g(
+            "segundos_sem_leitura",
+            "segundos desde a última leitura boa (0 = lendo agora)",
+            0.0,
         );
     }
     if let Some(st) = &e.status {

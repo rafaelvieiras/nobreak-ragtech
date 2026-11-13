@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.8.0 (12/nov/2026)
+A serial do nobreak pode trocar de nome sozinha, e isso parava o serviço em silêncio.
+- **Caminho alternativo automático** (`backend/src/fonte.rs`): quando o caminho de `NOBREAK_PORTA` não abre, o serviço tenta o último caminho que funcionou, os de `NOBREAK_PORTAS_ALTERNATIVAS` e por fim qualquer serial com o **mesmo `idVendor:idProduct`** do aparelho que já leu (lido do sysfs). Sem histórico de leitura ele não adivinha — abrir um serial alheio (coordenador Zigbee, modem) e escrever um quadro nele seria pior que ficar desconectado.
+- **Mensagem de erro útil:** quando nada abre, o texto diz qual caminho falhou, que o aparelho da última leitura (USB `vid:pid`) não respondeu e quais seriais existem no sistema — é a pista para achar o nome novo.
+- **`NOBREAK_PORTAS_ALTERNATIVAS`**: lista separada por vírgula de caminhos extras, para quem não tem `/dev/serial/by-id`.
+- **`nobreak_segundos_sem_leitura`** nas métricas e `sem_leitura_desde` em `/api/estado`: dizem há quanto tempo o nobreak está mudo (antes só dava para deduzir pela hora da última leitura).
+- **Docs:** `docs/instalacao.md` e `compose.yaml` deixam de ensinar `--device /dev/ttyACM0` (nó estático que morre na primeira reenumeração) e passam a usar `/dev` montado com `device_cgroup_rule` do major 166 + o caminho de `/dev/serial/by-id`.
+
+Caso real que gerou a versão: no Moon, o adaptador USB reenumerou de `ttyACM0` para `ttyACM1` em 07/nov e o container ficou 5 dias com `No such device or address`, painel e NUT congelados.
+
 ## 0.7.0 (30/out/2026)
 Revisão de UX/UI e de internacionalização do painel.
 - **Celular:** some a rolagem horizontal da página (a tabela de Quedas passou a rolar dentro do cartão); Quedas e Eventos viram lista empilhada abaixo de 480 px; cartões em 2 colunas; gráficos desenhados na largura real, com texto de 11 px.

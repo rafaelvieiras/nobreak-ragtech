@@ -6,11 +6,17 @@ services:
     restart: unless-stopped
     ports:
       - "8088:8080"            # painel em http://IP-DO-HOST:8088
-    devices:
-      - /dev/ragtech:/dev/ragtech   # ou /dev/ttyACM0 (veja docs/instalacao.md)
+    volumes:
+      - /dev:/dev              # dinâmico (ver comentário acima)
+    # Monta /dev inteiro e libera só o major do ttyACM (166): é o que sobrevive à
+    # reenumeração USB. NÃO use `devices: /dev/ttyACM0` — é um nó estático e o painel
+    # congela em silêncio quando o aparelho vira ttyACM1. Veja docs/instalacao.md.
+    device_cgroup_rules:
+      - "c 166:* rmw"          # ttyACM* apenas
     # group_add: ["20"]        # grupo "dialout" do host, se a porta não for 0666
     environment:
-      NOBREAK_PORTA: /dev/ragtech
+      NOBREAK_PORTA: /dev/serial/by-id/usb-Ragtech_Sistemas_de_Energia_USB_Serial_Port-if00
+      # NOBREAK_PORTAS_ALTERNATIVAS: /dev/ttyACM0,/dev/ttyACM1
       NOBREAK_INTERVALO_S: "5"
       # NOBREAK_FATOR_VBAT: "2"   # se a tensão da bateria aparecer pela metade
     mem_limit: 32m

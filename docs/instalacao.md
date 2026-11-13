@@ -7,7 +7,28 @@ lsusb | grep -i 04d8        # Microchip: é o chip do nobreak Ragtech
 ls -l /dev/ttyACM* /dev/serial/by-id/
 ```
 
-O nobreak costuma aparecer como `/dev/ttyACM0`. Para um nome fixo, crie uma regra udev:
+O nobreak costuma aparecer como `/dev/ttyACM0`. **Não use esse nome na configuração:**
+o número muda quando o adaptador USB reenumera (queda de energia, replug, glitch da porta
+USB) — `ttyACM0` vira `ttyACM1` e quem abria o nome antigo passa a receber
+`No such device or address`.
+
+Prefira o caminho de `/dev/serial/by-id/`, que aponta para o aparelho e não para o número:
+
+```bash
+ls -l /dev/serial/by-id/          # usb-Ragtech_Sistemas_de_Energia_USB_Serial_Port-if00
+NOBREAK_PORTA=/dev/serial/by-id/usb-Ragtech_Sistemas_de_Energia_USB_Serial_Port-if00
+```
+
+Desde a 0.8.0 o serviço também se defende sozinho: se o caminho configurado não abrir, ele
+procura outro serial com o **mesmo `idVendor:idProduct`** do aparelho que já leu (e nunca
+abre um serial de outra pessoa, como um coordenador Zigbee). Para fixar caminhos extras
+(máquina com várias seriais, sem `by-id`), use `NOBREAK_PORTAS_ALTERNATIVAS`:
+
+```bash
+NOBREAK_PORTAS_ALTERNATIVAS=/dev/ttyACM0,/dev/ttyACM1,/dev/ttyUSB0
+```
+
+Se preferir um nome curto e estável, uma regra udev também serve:
 
 ```
 # /etc/udev/rules.d/99-ragtech.rules
@@ -18,17 +39,28 @@ SUBSYSTEM=="tty", ATTRS{idVendor}=="04d8", ATTRS{idProduct}=="000a", MODE="0660"
 sudo udevadm control --reload && sudo udevadm trigger
 ```
 
+> **Docker:** `--device /dev/ttyACM0:/dev/ragtech` cria um nó **estático** no container, criado
+> no start. Se o aparelho reenumerar, o container fica com um nó morto para sempre (o
+> `--restart` não recria) e o painel congela em silêncio. Use `/dev` montado e o `by-id` —
+> veja a seção [Docker](#docker).
+
 ## Docker
 
 ```bash
 docker run -d --name nobreak-ragtech --restart unless-stopped \
-  -p 8088:8080 --device /dev/ragtech:/dev/ragtech -e NOBREAK_PORTA=/dev/ragtech \
-  --group-add "$(getent group dialout | cut -d: -f3)" \
+  -p 8088:8080 \
+  -v /dev:/dev --device-cgroup-rule='c 166:* rmw' \
+  -e NOBREAK_PORTA=/dev/serial/by-id/usb-Ragtech_Sistemas_de_Energia_USB_Serial_Port-if00 \
   --memory 32m --read-only --cap-drop ALL --security-opt no-new-privileges:true \
   ghcr.io/rafaelvieiras/nobreak-ragtech:latest
 ```
 
-A imagem roda como usuário sem privilégios (`65532`). Se a porta não for `0666`, use `--group-add` com o grupo dono dela.
+`-v /dev:/dev` é o que sobrevive à reenumeração USB; `--device-cgroup-rule='c 166:* rmw'` mantém
+o container longe de qualquer coisa que não seja `ttyACM` (166 é o major desses dispositivos),
+mesmo com `/dev` inteiro visível.
+
+A imagem roda como usuário sem privilégios (`65532`). Se a porta não for `0666`, use
+`--group-add` com o grupo dono dela (`"--group-add $(getent group dialout | cut -d: -f3)"`).
 
 ## Substituir o script `dummy-ups` do NUT
 
@@ -70,7 +102,7 @@ O arquivo de eventos guarda no máximo ~128 KB (os eventos mais antigos são des
 Baixe o `.tar.gz` da sua arquitetura em [Releases](../../releases), confira o `SHA256SUMS` e rode:
 
 ```bash
-NOBREAK_PORTA=/dev/ragtech ./nobreak-ragtech
+NOBREAK_PORTA=/dev/serial/by-id/usb-Ragtech_Sistemas_de_Energia_USB_Serial_Port-if00 ./nobreak-ragtech
 ```
 
 Para iniciar no boot, use um serviço `systemd`:
@@ -78,7 +110,7 @@ Para iniciar no boot, use um serviço `systemd`:
 ```ini
 [Service]
 ExecStart=/usr/local/bin/nobreak-ragtech
-Environment=NOBREAK_PORTA=/dev/ragtech
+Environment=NOBREAK_PORTA=/dev/serial/by-id/usb-Ragtech_Sistemas_de_Energia_USB_Serial_Port-if00
 User=nobreak
 SupplementaryGroups=dialout
 Restart=on-failure
