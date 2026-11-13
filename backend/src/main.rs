@@ -1,3 +1,4 @@
+mod acoes;
 mod alarmes;
 mod bateria;
 mod fonte;
@@ -51,6 +52,11 @@ struct Estado {
     osc_0x202: Option<[u8; 2]>,
     /// Estado da política de desligamento por bateria baixa.
     desligamento: Option<politica::Situacao>,
+    /// Situação do religa-mento do nashome (WOL).
+    ligar_nashome: Option<acoes::Situacao>,
+    /// Autonomia estimada agora, em segundos: projeção ao vivo durante a queda,
+    /// autonomia medida reescalada pela carga atual com a rede presente.
+    autonomia_s: Option<u64>,
 }
 
 #[derive(Clone)]
@@ -85,6 +91,11 @@ struct Config {
     notificar_eventos: String,
     /// Desligamento do host por bateria baixa (`NOBREAK_DESLIGAR*`).
     politica: politica::Config,
+    /// Minutos de autonomia projetada a partir dos quais o NUT reporta `LB`
+    /// (`NOBREAK_LB_PROJETADO_MIN`, 0 desliga).
+    lb_projetado_min: f32,
+    /// Religar o nashome por Wake-on-LAN (`NOBREAK_LIGAR_*`).
+    acoes: acoes::Config,
 }
 
 fn env(chave: &str, padrao: &str) -> String {
@@ -151,6 +162,25 @@ fn config() -> Config {
             .filter(|v| !v.trim().is_empty()),
         notificar_nome: env("NOBREAK_NOTIFICAR_NOME", "Nobreak"),
         notificar_eventos: env("NOBREAK_NOTIFICAR_EVENTOS", ""),
+        lb_projetado_min: env("NOBREAK_LB_PROJETADO_MIN", "5")
+            .replace(',', ".")
+            .parse()
+            .unwrap_or(5.0),
+        acoes: acoes::Config {
+            ligada: env("NOBREAK_LIGAR_NASHOME", "0") == "1",
+            estavel_s: env("NOBREAK_LIGAR_ESTAVEL_S", "900").parse().unwrap_or(900),
+            bateria_pct: env("NOBREAK_LIGAR_BATERIA_PCT", "85")
+                .replace(',', ".")
+                .parse()
+                .unwrap_or(85.0),
+            janela_s: env("NOBREAK_LIGAR_JANELA_H", "6")
+                .parse::<u64>()
+                .unwrap_or(6)
+                * 3600,
+            arquivo: std::env::var("NOBREAK_ARQUIVO_LIGAR_NASHOME")
+                .ok()
+                .filter(|v| !v.trim().is_empty()),
+        },
         politica: politica::Config {
             ligada: env("NOBREAK_DESLIGAR", "0") == "1",
             margem_s: env("NOBREAK_DESLIGAR_MARGEM_S", "120")
@@ -251,9 +281,50 @@ fn aplicar(e: &mut Estado, b: &Brutos, fator_vbat: f32) {
     e.atualizado_em = Some(agora());
 }
 
+/// Troca acentos por ASCII: o `dummy-ups` não preserva byte não-ASCII e o texto chega
+/// embaralhado a quem lê (`Ausncia de rede eltrica`, visto em 13/nov/2026).
+fn sem_acentos(t: &str) -> String {
+    t.chars()
+        .map(|c| match c {
+            'á' | 'à' | 'â' | 'ã' | 'ä' => 'a',
+            'é' | 'è' | 'ê' | 'ë' => 'e',
+            'í' | 'ì' | 'î' | 'ï' => 'i',
+            'ó' | 'ò' | 'ô' | 'õ' | 'ö' => 'o',
+            'ú' | 'ù' | 'û' | 'ü' => 'u',
+            'ç' => 'c',
+            'Á' | 'À' | 'Â' | 'Ã' | 'Ä' => 'A',
+            'É' | 'È' | 'Ê' | 'Ë' => 'E',
+            'Í' | 'Ì' | 'Î' | 'Ï' => 'I',
+            'Ó' | 'Ò' | 'Ô' | 'Õ' | 'Ö' => 'O',
+            'Ú' | 'Ù' | 'Û' | 'Ü' => 'U',
+            'Ç' => 'C',
+            c if c.is_ascii() => c,
+            _ => '?',
+        })
+        .collect()
+}
+
+/// Status para o NUT, com LB derivado quando a autonomia projetada acaba antes de o
+/// nobreak sinalizar bateria fraca. É o que faz o `upsmon` de outra máquina (o Unraid do
+/// nashome) desligar a tempo: esperar o LB do próprio nobreak seria esperar o fim.
+fn status_para_nut(e: &Estado, lb_apos_s: Option<u64>) -> String {
+    let mut st = e.status.clone().unwrap_or_default();
+    if let Some(limite) = lb_apos_s {
+        if st.starts_with("OB") && !st.contains("LB") {
+            if let Some(a) = e.autonomia_s {
+                if a <= limite {
+                    st.push_str(" LB");
+                }
+            }
+        }
+    }
+    st
+}
+
 /// Formato do arquivo lido pelo driver `dummy-ups` do NUT (compatível com o script antigo).
-fn arquivo_nut(e: &Estado) -> Option<String> {
-    let (m, s) = (e.medidas.as_ref()?, e.status.as_ref()?);
+fn arquivo_nut(e: &Estado, lb_apos_s: Option<u64>) -> Option<String> {
+    let m = e.medidas.as_ref()?;
+    e.status.as_ref()?;
     let l = |k: &str, v: String| format!("{k}: {v}\n");
     let pot = m.tensao_saida_v * m.corrente_saida_a;
     Some(
@@ -265,19 +336,22 @@ fn arquivo_nut(e: &Estado) -> Option<String> {
             + &l("output.apower", format!("{pot:.1}"))
             + &l("ups.temperature", format!("{:.0}", m.temperatura_c))
             + &l("ups.load", format!("{:.0}", m.carga_saida_pct))
-            + &l("ups.status", s.clone())
-            + &if e.alarmes.is_empty() {
-                String::new()
-            } else {
-                l(
-                    "ups.alarm",
-                    e.alarmes
+            + &l("ups.status", status_para_nut(e, lb_apos_s))
+            + &e.autonomia_s
+                .map(|a| l("battery.runtime", a.to_string()))
+                .unwrap_or_default()
+            // `ups.alarm` é escrito sempre: o driver `dummy-ups` mantém uma variável que
+            // desaparece do arquivo, então uma linha vazia é o que limpa o alarme antigo.
+            + &l(
+                "ups.alarm",
+                sem_acentos(
+                    &e.alarmes
                         .iter()
                         .map(|a| a.texto)
                         .collect::<Vec<_>>()
                         .join("/"),
-                )
-            },
+                ),
+            ),
     )
 }
 
@@ -308,6 +382,7 @@ fn coletor(
         Fonte::serial_com(cfg.porta.clone(), cfg.portas_alternativas.clone(), cfg.id)
     };
     let mut pol = politica::Politica::nova(cfg.politica.clone());
+    let mut ac = acoes::Acoes::nova(cfg.acoes.clone());
     loop {
         let r = fonte.ler_tudo();
         let mut em_bateria_s = 0u64;
@@ -326,7 +401,12 @@ fn coletor(
                             novos.extend(h.registrar(agora(), &b, m, st));
                         }
                     }
-                    if let (Some(p), Some(txt)) = (&cfg.arquivo_nut, arquivo_nut(&e)) {
+                    let lb_apos_s = if cfg.lb_projetado_min > 0.0 {
+                        Some((cfg.lb_projetado_min * 60.0) as u64)
+                    } else {
+                        None
+                    };
+                    if let (Some(p), Some(txt)) = (&cfg.arquivo_nut, arquivo_nut(&e, lb_apos_s)) {
                         gravar_arquivo(p, &txt);
                     }
                     if let (Some(m), Some(st)) = (&e.medidas, &e.status) {
@@ -392,6 +472,9 @@ fn coletor(
                                 t,
                                 Some(m.carga_saida_pct),
                             );
+                            if let Some(m) = saude.autonomia_na_carga_atual_min {
+                                e.autonomia_s = Some((m * 60.0) as u64);
+                            }
                             v.extend(n.detector.saude(t, &saude.avisos));
                             n.enviar(v);
                         }
@@ -417,6 +500,58 @@ fn coletor(
                         },
                     );
                     e.desligamento = Some(pol.situacao(t));
+                    if let Some(a) = e.desligamento.as_ref().and_then(|d| d.autonomia_s) {
+                        e.autonomia_s = Some(a);
+                    }
+                    // Religa-mento do nashome: só depois de uma queda, com a rede estável
+                    // e a bateria recuperada (o WOL é feito pelo host, via wolbridge).
+                    let em_queda = e
+                        .status
+                        .as_deref()
+                        .map(|x| x.starts_with("OB"))
+                        .unwrap_or(false);
+                    let fim_ultima = {
+                        let q = quedas.lock().unwrap();
+                        q.lista().back().and_then(|x| x.fim)
+                    };
+                    let evento_ligar = ac.avaliar(
+                        t,
+                        em_queda,
+                        e.medidas
+                            .as_ref()
+                            .map(|m| m.carga_bateria_pct)
+                            .unwrap_or(0.0),
+                        fim_ultima,
+                    );
+                    e.ligar_nashome = Some(ac.situacao(t, em_queda));
+                    if let Some(acoes::Evento::Ligar { motivo, erro }) = evento_ligar {
+                        match &erro {
+                            None => {
+                                println!("ligar nashome: pedido gravado — {motivo}");
+                                if let Some(n) = notif.as_mut() {
+                                    n.enviar(vec![Notif {
+                                        evento: "ligar_nashome",
+                                        gravidade: Gravidade::Info,
+                                        titulo: "Ligando o nashome".to_string(),
+                                        texto: motivo,
+                                        t,
+                                    }]);
+                                }
+                            }
+                            Some(e) => {
+                                println!("ligar nashome: NÃO gravado — {motivo}. {e}");
+                                if let Some(n) = notif.as_mut() {
+                                    n.enviar(vec![Notif {
+                                        evento: "ligar_nashome",
+                                        gravidade: Gravidade::Erro,
+                                        titulo: "Nashome NÃO será ligado".to_string(),
+                                        texto: format!("{motivo}. {e}"),
+                                        t,
+                                    }]);
+                                }
+                            }
+                        }
+                    }
                     if let Some(evento) = evento {
                         let (titulo, texto, gravidade) = match &evento {
                             politica::Evento::Aviso { restante_s, motivo } => (
@@ -541,6 +676,20 @@ fn metricas(e: &Estado, q: &Quedas, cfg: &Config) -> String {
             "segundos_sem_leitura",
             "segundos desde a última leitura boa (0 = lendo agora)",
             0.0,
+        );
+    }
+    if let Some(a) = e.autonomia_s {
+        g(
+            "autonomia_s",
+            "autonomia estimada agora, em segundos (o que vai no battery.runtime do NUT)",
+            a as f64,
+        );
+    }
+    if let Some(l) = &e.ligar_nashome {
+        g(
+            "ligar_nashome_estavel_segundos",
+            "segundos de rede estável desde a última queda (0 = na bateria)",
+            l.estavel_s.unwrap_or(0) as f64,
         );
     }
     if let Some(d) = &e.desligamento {
@@ -859,5 +1008,35 @@ fn main() {
             req.url(),
         );
         let _ = req.respond(resp);
+    }
+}
+
+#[cfg(test)]
+mod testes_nut {
+    use super::*;
+
+    #[test]
+    fn sem_acentos_limpa_texto() {
+        assert_eq!(
+            sem_acentos("Bateria baixa/Falta de rede elétrica"),
+            "Bateria baixa/Falta de rede eletrica"
+        );
+        assert_eq!(sem_acentos("tensão de saída"), "tensao de saida");
+    }
+
+    #[test]
+    fn lb_derivado_entra_quando_a_autonomia_acaba() {
+        let mut e = Estado {
+            status: Some("OB".to_string()),
+            autonomia_s: Some(120),
+            ..Default::default()
+        };
+        assert_eq!(status_para_nut(&e, Some(300)), "OB LB"); // 2 min < 5 min
+        assert_eq!(status_para_nut(&e, Some(60)), "OB"); // 2 min > 1 min
+        assert_eq!(status_para_nut(&e, None), "OB"); // recurso desligado
+        e.status = Some("OL".to_string());
+        assert_eq!(status_para_nut(&e, Some(300)), "OL"); // com rede nunca inventa LB
+        e.status = Some("OB LB".to_string());
+        assert_eq!(status_para_nut(&e, Some(300)), "OB LB"); // não duplica
     }
 }

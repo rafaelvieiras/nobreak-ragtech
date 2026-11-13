@@ -157,6 +157,64 @@ energia e veja a queda.
 Se a rede voltar em qualquer momento antes do pedido, a contagem é cancelada e o evento
 aparece no painel. A autonomia estimada aparece durante a queda.
 
+## Integração com NUT (outras máquinas desligam junto)
+
+O serviço grava o arquivo que o driver `dummy-ups` lê, então qualquer máquina pode ser
+cliente NUT do host onde ele roda. O caso real é um servidor grande (Unraid) que precisa
+desligar **antes** do nobreak acabar, enquanto o host pequeno segue na bateria.
+
+No host do serviço (o que tem o cabo USB):
+
+```ini
+# /etc/nut/ups.conf
+[server-room]
+    driver = dummy-ups
+    port = /var/lib/nut/ragtech-ups.data
+
+# /etc/nut/upsd.users  — usuário só para escutar (slave)
+[nashome]
+    password = <senha>
+    upsmon slave
+```
+
+`upsd` escuta em `0.0.0.0:3493` por padrão. Duas variáveis do arquivo existem para o
+cliente decidir bem:
+
+| Variável | O que é |
+|---|---|
+| `battery.runtime` | Autonomia estimada agora, em segundos: projeção ao vivo durante a queda, autonomia medida reescalada pela carga atual quando há rede |
+| `ups.status` com `LB` derivado | `NOBREAK_LB_PROJETADO_MIN` (padrão 5): o serviço acrescenta `LB` quando a autonomia projetada cai abaixo disso, mesmo que o nobreak ainda não sinalize bateria fraca — é o que faz o cliente desligar a tempo |
+
+Do outro lado, um `upsmon` em modo slave:
+
+```ini
+MONITOR server-room@HOST 1 nashome <senha> slave
+MINSUPPLIES 1
+SHUTDOWNCMD "/sbin/shutdown -h +0"
+POLLFREQ 5
+```
+
+No Unraid isso é nativo: **Settings → UPS Settings → UPS type = NUT**, IP do host, nome do
+UPS (`server-room`), usuário e senha. Os limiares do Unraid (bateria % ou tempo restante)
+usam `battery.charge` e `battery.runtime` do serviço.
+
+## Religar a máquina grande por Wake-on-LAN
+
+`NOBREAK_LIGAR_NASHOME=1` faz o serviço gravar um pedido de WOL quando, **depois de uma
+queda registrada**, a rede fica estável por `NOBREAK_LIGAR_ESTAVEL_S` (padrão 900 s) e a
+bateria chega a `NOBREAK_LIGAR_BATERIA_PCT` (padrão 85 %). Quem envia o magic packet é o
+host (`nobreak-ligar-nashome.path` → `nobreak-ligar-nashome.sh` → wolbridge). A ideia é
+manter o "ligar ao voltar a energia" desligado no firmware da máquina, para ela não subir
+com a bateria ainda baixa e cair de novo.
+
+| Variável | Padrão | O que faz |
+|---|---|---|
+| `NOBREAK_LIGAR_NASHOME` | `0` | Liga o pedido de WOL |
+| `NOBREAK_LIGAR_ESTAVEL_S` | `900` | Tempo de rede estável exigido |
+| `NOBREAK_LIGAR_BATERIA_PCT` | `85` | Bateria mínima para religar |
+| `NOBREAK_LIGAR_JANELA_H` | `6` | Só religa se a queda terminou nas últimas N horas |
+| `NOBREAK_ARQUIVO_LIGAR_NASHOME` | vazio | Onde gravar o pedido |
+
 ## Binário sem Docker
 
 Baixe o `.tar.gz` da sua arquitetura em [Releases](../../releases), confira o `SHA256SUMS` e rode:

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.12.0 (13/nov/2026)
+Pensado para quem tem uma máquina grande atrás do mesmo nobreak.
+- **`battery.runtime` no arquivo do NUT**: autonomia estimada agora (projeção ao vivo na queda; autonomia medida reescalada pela carga quando há rede). É o número que clientes NUT usam para "desligar quando faltar X de autonomia".
+- **`LB` derivado** (`NOBREAK_LB_PROJETADO_MIN`, padrão 5 min): o serviço acrescenta `LB` ao `ups.status` quando a autonomia projetada acaba antes de o nobreak sinalizar bateria fraca. Sem isso, um cliente NUT só desligaria no fim da bateria.
+- **Religamento por Wake-on-LAN** (`acoes.rs`): depois de uma queda registrada, com rede estável por `NOBREAK_LIGAR_ESTAVEL_S` e bateria ≥ `NOBREAK_LIGAR_BATERIA_PCT`, o serviço grava um pedido; o host envia o magic packet. Serve para deixar o "ligar ao voltar a energia" desligado no firmware e não subir a máquina com a bateria baixa.
+- **Correção no arquivo do NUT**: `ups.alarm` passa a ser escrito **sempre** (vazio quando não há alarme) porque o `dummy-ups` mantém variável que desaparece do arquivo — no Moon um alarme de 30/out ficou preso por duas semanas; e o texto do alarme vai em ASCII, porque o driver embaralha byte não-ASCII.
+
 ## 0.11.0 (13/nov/2026)
 A autonomia passa a ser mostrada com a carga que está ligada **agora**.
 - **`/api/bateria`**: novos campos `carga_atual_pct` e `autonomia_na_carga_atual_min`, que reescalam a autonomia medida na última queda pela razão entre a carga daquela queda e a carga atual. Os avisos de autonomia (`autonomia_critica`/`autonomia_curta`) passaram a usar esse número — antes um teste com 3 % de carga rendia "50 min" mesmo com 35 % de carga ligada, o que dava falsa segurança.

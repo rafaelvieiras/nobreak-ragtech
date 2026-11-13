@@ -60,6 +60,11 @@ Sem Docker, baixe o binário em [Releases](../../releases) e rode `./nobreak-rag
 | `NOBREAK_DESLIGAR_CONFIRMA_S` | `10` | Confirmação dos gatilhos por piso/tempo |
 | `NOBREAK_DESLIGAR_AVISO_S` | `20` | Contagem regressiva máxima (encolhe com pouca autonomia) |
 | `NOBREAK_ARQUIVO_DESLIGAR` | vazio | Arquivo do pedido de desligamento (vazio = não grava) |
+| `NOBREAK_LB_PROJETADO_MIN` | `5` | Minutos de autonomia projetada que fazem o NUT reportar `LB` (para outras máquinas desligarem a tempo). `0` desliga |
+| `NOBREAK_LIGAR_NASHOME` | `0` | `1` pede o religamento da máquina grande por Wake-on-LAN depois da queda |
+| `NOBREAK_LIGAR_ESTAVEL_S` | `900` | Rede estável exigida antes de religar |
+| `NOBREAK_LIGAR_BATERIA_PCT` | `85` | Bateria mínima para religar |
+| `NOBREAK_ARQUIVO_LIGAR_NASHOME` | vazio | Arquivo do pedido de WOL |
 | `NOBREAK_PORTAS_ALTERNATIVAS` | vazio | Caminhos extras de serial, separados por vírgula. Desde a 0.8.0 o serviço já procura sozinho o mesmo aparelho (`idVendor:idProduct`) quando o caminho configurado não abre |
 | `NOBREAK_ESCUTA` | `0.0.0.0:8080` | Endereço do painel |
 | `NOBREAK_INTERVALO_S` | `5` | Segundos entre leituras |
