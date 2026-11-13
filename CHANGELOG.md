@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.12.1 (13/nov/2026)
+- **Correção:** `battery.runtime` não aparecia quando as notificações estavam desligadas — o cálculo da autonomia estava dentro do bloco que monta as notificações. No Moon (sem ntfy/webhook) o NUT ficava sem o número mais importante para o cliente decidir desligar.
+- **Correção:** `ups.alarm` com valor vazio **não** limpava nada: o `dummy-ups` repetia o token da linha anterior e o alarme aparecia igual ao `ups.load` (`ups.alarm: 33`). Agora, sem alarme, o valor é `-`.
+
 ## 0.12.0 (13/nov/2026)
 Pensado para quem tem uma máquina grande atrás do mesmo nobreak.
 - **`battery.runtime` no arquivo do NUT**: autonomia estimada agora (projeção ao vivo na queda; autonomia medida reescalada pela carga quando há rede). É o número que clientes NUT usam para "desligar quando faltar X de autonomia".

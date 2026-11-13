@@ -344,13 +344,22 @@ fn arquivo_nut(e: &Estado, lb_apos_s: Option<u64>) -> Option<String> {
             // desaparece do arquivo, então uma linha vazia é o que limpa o alarme antigo.
             + &l(
                 "ups.alarm",
-                sem_acentos(
-                    &e.alarmes
-                        .iter()
-                        .map(|a| a.texto)
-                        .collect::<Vec<_>>()
-                        .join("/"),
-                ),
+                {
+                    let txt = sem_acentos(
+                        &e.alarmes
+                            .iter()
+                            .map(|a| a.texto)
+                            .collect::<Vec<_>>()
+                            .join("/"),
+                    );
+                    // Valor vazio NÃO limpa: o `dummy-ups` repete o token da linha anterior
+                    // (ups.alarm ficava igual ao ups.load). Um traço diz "sem alarme".
+                    if txt.is_empty() {
+                        "-".to_string()
+                    } else {
+                        txt
+                    }
+                },
             ),
     )
 }
@@ -387,6 +396,7 @@ fn coletor(
         let r = fonte.ler_tudo();
         let mut em_bateria_s = 0u64;
         let mut bateria_inicio_pct = 100.0f32;
+        let mut autonomia_nova: Option<u64> = None;
         {
             let mut e = estado.lock().unwrap();
             let mut novos = Vec::new();
@@ -452,8 +462,23 @@ fn coletor(
                         } else {
                             q.drenar();
                         }
+                        let t = agora();
+                        // A autonomia corrente vale para o `battery.runtime` do NUT, então
+                        // é calculada sempre — não só quando há notificação configurada.
+                        let saude = {
+                            let q = quedas.lock().unwrap();
+                            bateria::avaliar(
+                                &q,
+                                Some(m.temperatura_c),
+                                cfg.bateria_instalada,
+                                t,
+                                Some(m.carga_saida_pct),
+                            )
+                        };
+                        autonomia_nova = saude
+                            .autonomia_na_carga_atual_min
+                            .map(|a| (a * 60.0) as u64);
                         if let Some(n) = notif.as_mut() {
-                            let t = agora();
                             let mut v = n.detector.conexao(t, true, "");
                             v.extend(n.detector.leitura(
                                 t,
@@ -461,20 +486,12 @@ fn coletor(
                                     em_queda: st.starts_with("OB"),
                                     bateria_pct: m.carga_bateria_pct,
                                     alarmes: &e.alarmes,
-                                    duracao_ultima_queda_s:
-                                        q.lista().back().and_then(|x| x.duracao_s),
+                                    duracao_ultima_queda_s: {
+                                        let q = quedas.lock().unwrap();
+                                        q.lista().back().and_then(|x| x.duracao_s)
+                                    },
                                 },
                             ));
-                            let saude = bateria::avaliar(
-                                &q,
-                                Some(m.temperatura_c),
-                                cfg.bateria_instalada,
-                                t,
-                                Some(m.carga_saida_pct),
-                            );
-                            if let Some(m) = saude.autonomia_na_carga_atual_min {
-                                e.autonomia_s = Some((m * 60.0) as u64);
-                            }
                             v.extend(n.detector.saude(t, &saude.avisos));
                             n.enviar(v);
                         }
@@ -500,9 +517,12 @@ fn coletor(
                         },
                     );
                     e.desligamento = Some(pol.situacao(t));
-                    if let Some(a) = e.desligamento.as_ref().and_then(|d| d.autonomia_s) {
-                        e.autonomia_s = Some(a);
-                    }
+                    // ao vivo (na queda) manda a projeção; com rede, a autonomia reescalada
+                    e.autonomia_s = e
+                        .desligamento
+                        .as_ref()
+                        .and_then(|d| d.autonomia_s)
+                        .or(autonomia_nova);
                     // Religa-mento do nashome: só depois de uma queda, com a rede estável
                     // e a bateria recuperada (o WOL é feito pelo host, via wolbridge).
                     let em_queda = e
