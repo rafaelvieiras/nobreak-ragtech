@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.12.2 (13/nov/2026)
+- **Correção grave:** travamento total do serviço (painel sem resposta, healthcheck estourando, arquivo do NUT congelado) por **dois impasses de lock** introduzidos na 0.12.1:
+  - o coletor pegava `quedas` duas vezes na mesma thread — `Mutex` do `std` não é reentrante, então a segunda aquisição esperava para sempre. Era o efeito colateral de tirar o cálculo da autonomia de dentro do bloco de notificações;
+  - o handler do `/api/bateria` pegava `quedas` e, dentro dos argumentos, `estado` — ordem inversa do coletor (`estado` → `quedas`), o que fecha o ciclo com uma requisição do painel.
+
+  Agora o código usa o guard já adquirido e a ordem de lock está documentada no handler. O `HEALTHCHECK` do container pegou o travamento em 2 minutos — e o watchdog do host reinicia depois de 3 falhas seguidas.
+
 ## 0.12.1 (13/nov/2026)
 - **Correção:** `battery.runtime` não aparecia quando as notificações estavam desligadas — o cálculo da autonomia estava dentro do bloco que monta as notificações. No Moon (sem ntfy/webhook) o NUT ficava sem o número mais importante para o cliente decidir desligar.
 - **Correção:** `ups.alarm` com valor vazio **não** limpava nada: o `dummy-ups` repetia o token da linha anterior e o alarme aparecia igual ao `ups.load` (`ups.alarm: 33`). Agora, sem alarme, o valor é `-`.

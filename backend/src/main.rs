@@ -465,16 +465,13 @@ fn coletor(
                         let t = agora();
                         // A autonomia corrente vale para o `battery.runtime` do NUT, então
                         // é calculada sempre — não só quando há notificação configurada.
-                        let saude = {
-                            let q = quedas.lock().unwrap();
-                            bateria::avaliar(
-                                &q,
-                                Some(m.temperatura_c),
-                                cfg.bateria_instalada,
-                                t,
-                                Some(m.carga_saida_pct),
-                            )
-                        };
+                        let saude = bateria::avaliar(
+                            &q,
+                            Some(m.temperatura_c),
+                            cfg.bateria_instalada,
+                            t,
+                            Some(m.carga_saida_pct),
+                        );
                         autonomia_nova = saude
                             .autonomia_na_carga_atual_min
                             .map(|a| (a * 60.0) as u64);
@@ -486,10 +483,8 @@ fn coletor(
                                     em_queda: st.starts_with("OB"),
                                     bateria_pct: m.carga_bateria_pct,
                                     alarmes: &e.alarmes,
-                                    duracao_ultima_queda_s: {
-                                        let q = quedas.lock().unwrap();
-                                        q.lista().back().and_then(|x| x.duracao_s)
-                                    },
+                                    duracao_ultima_queda_s:
+                                        q.lista().back().and_then(|x| x.duracao_s),
                                 },
                             ));
                             v.extend(n.detector.saude(t, &saude.avisos));
@@ -848,24 +843,18 @@ fn servir(
             )
         }
         "/api/bateria" => {
-            let temp = estado
-                .lock()
-                .unwrap()
-                .medidas
-                .as_ref()
-                .map(|m| m.temperatura_c);
-            let s = bateria::avaliar(
-                &quedas.lock().unwrap(),
-                temp,
-                cfg.bateria_instalada,
-                agora(),
-                estado
-                    .lock()
-                    .unwrap()
-                    .medidas
-                    .as_ref()
-                    .map(|m| m.carga_saida_pct),
-            );
+            // ORDEM DE LOCK: sempre `estado` antes de `quedas` (o coletor faz igual).
+            // Ler as duas medidas de uma vez e soltar `estado` antes de pegar `quedas`
+            // evita o impasse que travou o serviço em 13/nov/2026.
+            let (temp, carga) = {
+                let e = estado.lock().unwrap();
+                let m = e.medidas.as_ref();
+                (m.map(|m| m.temperatura_c), m.map(|m| m.carga_saida_pct))
+            };
+            let s = {
+                let q = quedas.lock().unwrap();
+                bateria::avaliar(&q, temp, cfg.bateria_instalada, agora(), carga)
+            };
             json(serde_json::to_string(&s).unwrap(), 200)
         }
         "/api/saude" => {
