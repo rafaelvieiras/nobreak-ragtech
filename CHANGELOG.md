@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.9.2 (13/nov/2026)
+- Formatação (`cargo fmt`) que o CI cobra. Nada muda no comportamento em relação à 0.9.1.
+
 ## 0.9.1 (13/nov/2026)
 - **Correção:** o pedido de desligamento dizia "gravado" mesmo quando a escrita falhava (ex.: permissão negada no volume). Agora o evento e a notificação carregam o erro, e o caso de `NOBREAK_ARQUIVO_DESLIGAR` vazio avisa que nenhum host vai desligar — antes parecia tudo certo e a máquina continuaria ligada até a bateria acabar.
 - **Aviso de 0 s** vai direto ao pedido no mesmo ciclo, sem emitir um aviso que nunca existiu.

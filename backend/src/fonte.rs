@@ -48,13 +48,7 @@ impl Fonte {
                 identidade,
             } => {
                 if porta.is_none() {
-                    abrir(
-                        caminho,
-                        extras,
-                        identidade,
-                        ultimo_bom,
-                        porta,
-                    )?;
+                    abrir(caminho, extras, identidade, ultimo_bom, porta)?;
                 }
                 let r = (|| {
                     let p = porta.as_mut().unwrap();
@@ -91,7 +85,12 @@ fn abrir(
     ultimo_bom: &mut Option<String>,
     porta: &mut Option<Box<dyn serialport::SerialPort>>,
 ) -> Result<(), String> {
-    let ordem = ordem_de_abertura(ultimo_bom.as_deref(), caminho, extras, identidade.as_deref());
+    let ordem = ordem_de_abertura(
+        ultimo_bom.as_deref(),
+        caminho,
+        extras,
+        identidade.as_deref(),
+    );
     let mut falhas = Vec::new();
     for p in &ordem {
         match serialport::new(p.as_str(), 2400)

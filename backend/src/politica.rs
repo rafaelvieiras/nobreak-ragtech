@@ -126,7 +126,8 @@ impl Politica {
             return None;
         }
         let bateria_baixa = bateria_pct <= self.cfg.bateria_minima_pct;
-        let tempo_estourado = em_bateria_s >= self.cfg.tempo_maximo_s && self.cfg.tempo_maximo_s > 0;
+        let tempo_estourado =
+            em_bateria_s >= self.cfg.tempo_maximo_s && self.cfg.tempo_maximo_s > 0;
         let perigo = em_queda && (bateria_baixa || tempo_estourado);
 
         if !perigo {
