@@ -33,7 +33,11 @@ pub enum Evento {
     /// Entrou na contagem regressiva.
     Aviso { restante_s: u64, motivo: String },
     /// Escreveu o pedido de desligamento (ou o registrou, se não há arquivo).
-    Pedido { motivo: String },
+    /// `erro` só é `Some` quando a escrita no arquivo falhou: o host não vai desligar nada.
+    Pedido {
+        motivo: String,
+        erro: Option<String>,
+    },
     /// A condição passou (voltou a rede, bateria recuperou): contagem cancelada.
     Cancelado { motivo: String },
 }
@@ -158,33 +162,45 @@ impl Politica {
             return None;
         }
 
-        match self.fase {
-            Fase::Normal => {
-                self.fase = Fase::Aviso;
-                self.aviso_desde = Some(t);
-                self.motivo = motivo.clone();
-                Some(Evento::Aviso {
+        if self.fase == Fase::Pedido {
+            return None;
+        }
+        if self.fase == Fase::Normal {
+            self.fase = Fase::Aviso;
+            self.aviso_desde = Some(t);
+            self.motivo = motivo.clone();
+            // com aviso de 0 s não há contagem: segue direto para o pedido neste ciclo
+            if self.cfg.aviso_s > 0 {
+                return Some(Evento::Aviso {
                     restante_s: self.cfg.aviso_s,
                     motivo,
-                })
+                });
             }
-            Fase::Aviso => {
-                let desde = self.aviso_desde.unwrap_or(t);
-                if t.saturating_sub(desde) < self.cfg.aviso_s {
-                    return None;
-                }
-                self.fase = Fase::Pedido;
-                self.motivo = motivo.clone();
-                if let Some(caminho) = &self.cfg.arquivo {
-                    let conteudo = pedido_json(t, &motivo, bateria_pct, em_bateria_s);
-                    if let Err(e) = std::fs::write(caminho, conteudo) {
-                        eprintln!("não consegui escrever o pedido de desligamento em {caminho}: {e}");
-                    }
-                }
-                Some(Evento::Pedido { motivo })
-            }
-            Fase::Pedido => None,
         }
+        let desde = self.aviso_desde.unwrap_or(t);
+        if t.saturating_sub(desde) < self.cfg.aviso_s {
+            return None;
+        }
+        Some(self.pedir(t, motivo, bateria_pct, em_bateria_s))
+    }
+
+    /// Grava o pedido (quando há arquivo configurado) e vira `Fase::Pedido`.
+    fn pedir(&mut self, t: u64, motivo: String, bateria_pct: f32, em_bateria_s: u64) -> Evento {
+        self.fase = Fase::Pedido;
+        self.motivo = motivo.clone();
+        let erro = match &self.cfg.arquivo {
+            Some(caminho) => {
+                let conteudo = pedido_json(t, &motivo, bateria_pct, em_bateria_s);
+                match std::fs::write(caminho, conteudo) {
+                    Ok(()) => None,
+                    Err(e) => Some(format!("não consegui escrever o pedido em {caminho}: {e}")),
+                }
+            }
+            None => Some(
+                "NOBREAK_ARQUIVO_DESLIGAR não está definido: nenhum host vai desligar".to_string(),
+            ),
+        };
+        Evento::Pedido { motivo, erro }
     }
 }
 
@@ -297,6 +313,44 @@ mod testes {
         assert_eq!(p.avaliar(110, true, 45.0, 12), None);
         assert_eq!(p.avaliar(115, false, 100.0, 0), None); // nem chegou a avisar
         assert_eq!(p.situacao(115).fase, Fase::Normal);
+    }
+
+    #[test]
+    fn sem_arquivo_configurado_avisa_que_ninguem_vai_desligar() {
+        let mut p = Politica::nova(Config {
+            ligada: true,
+            bateria_minima_pct: 50.0,
+            confirma_s: 5,
+            tempo_maximo_s: 300,
+            aviso_s: 0,
+            arquivo: None,
+        });
+        p.avaliar(10, true, 40.0, 5);
+        match p.avaliar(15, true, 38.0, 10) {
+            Some(Evento::Pedido { erro, .. }) => {
+                assert!(erro.unwrap().contains("NOBREAK_ARQUIVO_DESLIGAR"));
+            }
+            outro => panic!("esperava Pedido, veio {outro:?}"),
+        }
+    }
+
+    #[test]
+    fn falha_de_escrita_aparece_no_evento() {
+        let mut p = Politica::nova(Config {
+            ligada: true,
+            bateria_minima_pct: 50.0,
+            confirma_s: 5,
+            tempo_maximo_s: 300,
+            aviso_s: 0,
+            arquivo: Some("/caminho/que/nao/existe/desligar".to_string()),
+        });
+        p.avaliar(10, true, 40.0, 5);
+        match p.avaliar(15, true, 38.0, 10) {
+            Some(Evento::Pedido { erro, .. }) => {
+                assert!(erro.unwrap().contains("não consegui escrever"));
+            }
+            outro => panic!("esperava Pedido, veio {outro:?}"),
+        }
     }
 
     #[test]

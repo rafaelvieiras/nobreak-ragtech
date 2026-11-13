@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.1 (13/nov/2026)
+- **Correção:** o pedido de desligamento dizia "gravado" mesmo quando a escrita falhava (ex.: permissão negada no volume). Agora o evento e a notificação carregam o erro, e o caso de `NOBREAK_ARQUIVO_DESLIGAR` vazio avisa que nenhum host vai desligar — antes parecia tudo certo e a máquina continuaria ligada até a bateria acabar.
+- **Aviso de 0 s** vai direto ao pedido no mesmo ciclo, sem emitir um aviso que nunca existiu.
+
 ## 0.9.0 (13/nov/2026)
 Desliga o computador antes de a bateria acabar.
 - **Política de desligamento** (`backend/src/politica.rs`): age só com leitura boa e só em queda de energia. Dois gatilhos — bateria abaixo de `NOBREAK_DESLIGAR_BATERIA_PCT` **ou** `NOBREAK_DESLIGAR_TEMPO_S` segundos sem rede (proteção para quando a porcentagem mente) — exigem `NOBREAK_DESLIGAR_CONFIRMA_S` de condição contínua, depois `NOBREAK_DESLIGAR_AVISO_S` de contagem regressiva antes do pedido. Voltar a rede cancela e gera evento.

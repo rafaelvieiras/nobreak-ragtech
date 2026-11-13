@@ -409,11 +409,18 @@ fn coletor(
                                 ),
                                 Gravidade::Erro,
                             ),
-                            politica::Evento::Pedido { motivo } => (
-                                "Desligamento pedido".to_string(),
-                                format!("{motivo}. Pedido de desligamento gravado."),
-                                Gravidade::Erro,
-                            ),
+                            politica::Evento::Pedido { motivo, erro } => match erro {
+                                None => (
+                                    "Desligamento pedido".to_string(),
+                                    format!("{motivo}. Pedido de desligamento gravado."),
+                                    Gravidade::Erro,
+                                ),
+                                Some(e) => (
+                                    "Desligamento NÃO gravado".to_string(),
+                                    format!("{motivo}. {e}"),
+                                    Gravidade::Erro,
+                                ),
+                            },
                             politica::Evento::Cancelado { motivo } => (
                                 "Desligamento cancelado".to_string(),
                                 motivo.clone(),
