@@ -79,6 +79,16 @@ pub const BITS: [Bit; 12] = [
     ),
 ];
 
+/// Bits conhecidos do quadro da Quadri. Aqui o "registrador" é a posição do byte no quadro
+/// de 32 bytes (ver `docs/quadri1200va.md`).
+pub const BITS_QUADRI: [Bit; 1] = [bit(
+    crate::quadri::POS_SEM_REDE as u16,
+    crate::quadri::MASCARA_SEM_REDE,
+    "sem_rede",
+    "Ausência de rede elétrica",
+    Aviso,
+)];
+
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct Alarme {
     pub codigo: &'static str,
@@ -97,26 +107,53 @@ fn valor(f: &Flags, registrador: u16) -> u8 {
     }
 }
 
+fn alarme(b: &Bit) -> Alarme {
+    Alarme {
+        codigo: b.codigo,
+        texto: b.texto,
+        gravidade: b.gravidade,
+        registrador: b.registrador,
+        mascara: b.mascara,
+    }
+}
+
 /// Alarmes ligados agora (avisos e erros; bits só informativos ficam de fora).
 pub fn ativos(f: &Flags) -> Vec<Alarme> {
     BITS.iter()
         .filter(|b| b.gravidade != Info && valor(f, b.registrador) & b.mascara != 0)
-        .map(|b| Alarme {
-            codigo: b.codigo,
-            texto: b.texto,
-            gravidade: b.gravidade,
-            registrador: b.registrador,
-            mascara: b.mascara,
+        .map(alarme)
+        .collect()
+}
+
+/// Alarmes ligados agora num quadro da Quadri.
+pub fn ativos_quadri(quadro: &[u8]) -> Vec<Alarme> {
+    BITS_QUADRI
+        .iter()
+        .filter(|b| {
+            b.gravidade != Info
+                && quadro
+                    .get(b.registrador as usize)
+                    .is_some_and(|v| v & b.mascara != 0)
         })
+        .map(alarme)
         .collect()
 }
 
 /// Texto para o log de mudanças: `+ Ausência de rede elétrica` (ligou), `− ...` (desligou).
 /// Devolve `None` quando nenhum dos bits que mudaram tem significado conhecido.
 pub fn descrever_mudanca(registrador: u16, de: u8, para: u8) -> Option<String> {
+    descrever_em(&BITS, registrador, de, para)
+}
+
+/// O mesmo, para a posição de um byte no quadro da Quadri.
+pub fn descrever_mudanca_quadri(posicao: u16, de: u8, para: u8) -> Option<String> {
+    descrever_em(&BITS_QUADRI, posicao, de, para)
+}
+
+fn descrever_em(tabela: &[Bit], registrador: u16, de: u8, para: u8) -> Option<String> {
     let ligou = para & !de;
     let desligou = de & !para;
-    let partes: Vec<String> = BITS
+    let partes: Vec<String> = tabela
         .iter()
         .filter(|b| b.registrador == registrador)
         .filter_map(|b| {
@@ -188,6 +225,22 @@ mod testes {
         );
         assert_eq!(descrever_mudanca(0x92, 0x01, 0x00), None);
         assert_eq!(descrever_mudanca(0x93, 0x00, 0xff), None);
+    }
+
+    #[test]
+    fn queda_real_da_quadri() {
+        use crate::quadri::testes::{quadro, NORMAL, QUEDA};
+        assert!(ativos_quadri(&quadro(NORMAL).0).is_empty());
+        let a = ativos_quadri(&quadro(QUEDA).0);
+        assert_eq!(a.len(), 1);
+        assert_eq!(a[0].codigo, "sem_rede");
+        assert_eq!((a[0].registrador, a[0].mascara), (18, 0x10));
+        // byte 18 foi de 0x00 para 0x10 no primeiro quadro sem rede (20/nov/2026)
+        assert_eq!(
+            descrever_mudanca_quadri(18, 0x00, 0x10).as_deref(),
+            Some("+ Ausência de rede elétrica")
+        );
+        assert_eq!(descrever_mudanca_quadri(13, 0x82, 0xc2), None);
     }
 
     #[test]

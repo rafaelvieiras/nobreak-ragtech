@@ -3,7 +3,7 @@
 //! Tudo em memória, com tamanho fixo. O log de eventos pode ser espelhado num arquivo
 //! `.jsonl` opcional para sobreviver a reinícios; a série nunca vai para o disco.
 
-use crate::leitura::{Brutos, Medidas};
+use crate::leitura::{Bruto, Medidas};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, VecDeque};
 
@@ -66,7 +66,8 @@ struct Ponto {
     bateria_v: f32,
     entrada_v: f32,
     saida_v: f32,
-    corrente_a: f32,
+    /// `None` quando o protocolo não mede corrente (Quadri).
+    corrente_a: Option<f32>,
     carga_pct: f32,
     temperatura_c: f32,
 }
@@ -84,21 +85,47 @@ pub struct Historico {
     ultimo_ponto: u64,
 }
 
-/// Todos os bytes lidos, como pares (endereço, valor).
-pub fn pares(b: &Brutos) -> Vec<(u16, u8)> {
-    let mut v: Vec<(u16, u8)> = b
-        .bloco
-        .iter()
-        .enumerate()
-        .map(|(i, x)| (crate::leitura::BASE + i as u16, *x))
-        .collect();
-    v.extend([
-        (0x00F3, b.calibracao),
-        (0x0136, b.cap_bateria),
-        (0x0202, b.osc53),
-        (0x0203, b.osc57),
-    ]);
-    v
+/// Todos os bytes lidos, como pares (endereço, valor). Na Quadri o "endereço" é a posição
+/// do byte no quadro (0..=31).
+pub fn pares(b: &Bruto) -> Vec<(u16, u8)> {
+    match b {
+        Bruto::Familia10(b) => {
+            let mut v: Vec<(u16, u8)> = b
+                .bloco
+                .iter()
+                .enumerate()
+                .map(|(i, x)| (crate::leitura::BASE + i as u16, *x))
+                .collect();
+            v.extend([
+                (0x00F3, b.calibracao),
+                (0x0136, b.cap_bateria),
+                (0x0202, b.osc53),
+                (0x0203, b.osc57),
+            ]);
+            v
+        }
+        Bruto::Quadri(q) => {
+            q.0.iter()
+                .enumerate()
+                .map(|(i, x)| (i as u16, *x))
+                .collect()
+        }
+    }
+}
+
+/// Endereço de medida (varia o tempo todo e fica fora do log de mudanças).
+fn e_medida(b: &Bruto, endereco: u16) -> bool {
+    match b {
+        Bruto::Familia10(_) => MEDIDAS.contains(&endereco),
+        Bruto::Quadri(_) => crate::quadri::MEDIDAS.contains(&(endereco as usize)),
+    }
+}
+
+fn descrever(b: &Bruto, endereco: u16, de: u8, para: u8) -> Option<String> {
+    match b {
+        Bruto::Familia10(_) => crate::alarmes::descrever_mudanca(endereco, de, para),
+        Bruto::Quadri(_) => crate::alarmes::descrever_mudanca_quadri(endereco, de, para),
+    }
 }
 
 impl Historico {
@@ -130,7 +157,7 @@ impl Historico {
     }
 
     /// Registra a leitura. Devolve os eventos novos (para espelhar no arquivo).
-    pub fn registrar(&mut self, t: u64, b: &Brutos, m: &Medidas, status: &str) -> Vec<Evento> {
+    pub fn registrar(&mut self, t: u64, b: &Bruto, m: &Medidas, status: &str) -> Vec<Evento> {
         let ctx = |tipo: &str, endereco, de, para, texto: Option<String>| Evento {
             t,
             tipo: tipo.into(),
@@ -147,12 +174,11 @@ impl Historico {
 
         match self.anterior.take() {
             None => {
-                let hex: String = b.bloco.iter().map(|x| format!("{x:02x}")).collect();
-                novos.push(ctx("inicio", None, None, None, Some(hex)));
+                novos.push(ctx("inicio", None, None, None, Some(b.hex())));
             }
             Some(ant) => {
                 for ((a, antes), (_, agora)) in ant.iter().zip(atual.iter()) {
-                    if antes == agora || MEDIDAS.contains(a) {
+                    if antes == agora || e_medida(b, *a) {
                         continue;
                     }
                     let c = self.contagem.entry(*a).or_default();
@@ -173,7 +199,7 @@ impl Historico {
                             Some(*a),
                             Some(*antes),
                             Some(*agora),
-                            crate::alarmes::descrever_mudanca(*a, *antes, *agora),
+                            descrever(b, *a, *antes, *agora),
                         ));
                     }
                 }
@@ -278,7 +304,7 @@ impl Historico {
             "bateria_v": col(|p| p.bateria_v),
             "entrada_v": col(|p| p.entrada_v),
             "saida_v": col(|p| p.saida_v),
-            "corrente_a": col(|p| p.corrente_a),
+            "corrente_a": self.serie.iter().map(|p| p.corrente_a).collect::<Vec<_>>(),
             "carga_pct": col(|p| p.carga_pct),
             "temperatura_c": col(|p| p.temperatura_c),
         })
@@ -352,27 +378,47 @@ pub fn anexar_arquivo(caminho: &str, novos: &[Evento]) {
 #[cfg(test)]
 mod testes {
     use super::*;
-    use crate::leitura::{decodificar, TAM_BLOCO};
+    use crate::leitura::{decodificar_bruto, Brutos, TAM_BLOCO};
 
-    fn brutos(muda: &[(usize, u8)]) -> Brutos {
+    fn brutos(muda: &[(usize, u8)]) -> Bruto {
         let mut bloco = [0u8; TAM_BLOCO];
         bloco[(0x9A - 0x80) as usize] = 6;
         bloco[(0x8B - 0x80) as usize] = 118;
         for (i, v) in muda {
             bloco[*i] = *v;
         }
-        Brutos {
+        Bruto::Familia10(Brutos {
             bloco,
             calibracao: 0x34,
             cap_bateria: 0xB4,
             osc53: 0x68,
             osc57: 0x46,
-        }
+        })
     }
 
-    fn rodar(h: &mut Historico, t: u64, b: &Brutos, st: &str) -> Vec<Evento> {
-        let (_, m, _) = decodificar(b, 1.0);
+    fn rodar(h: &mut Historico, t: u64, b: &Bruto, st: &str) -> Vec<Evento> {
+        let m = decodificar_bruto(b, 1.0).medidas;
         h.registrar(t, b, &m, st)
+    }
+
+    #[test]
+    fn quadri_registra_bit_de_rede_e_ignora_medidas() {
+        use crate::quadri::testes::{quadro, NORMAL, QUEDA};
+        let mut h = Historico::novo(100, 60);
+        let n = rodar(&mut h, 1000, &Bruto::Quadri(quadro(NORMAL)), "OL");
+        assert_eq!(n[0].tipo, "inicio");
+        assert_eq!(n[0].texto.as_deref().map(str::len), Some(64)); // quadro inteiro em hex
+        let n = rodar(&mut h, 1005, &Bruto::Quadri(quadro(QUEDA)), "OB");
+        let rede: Vec<_> = n.iter().filter(|e| e.endereco == Some(18)).collect();
+        assert_eq!(rede.len(), 1);
+        assert_eq!(
+            rede[0].texto.as_deref(),
+            Some("+ Ausência de rede elétrica")
+        );
+        // tensões, carga, temperatura e soma mudaram, mas não viram evento
+        for pos in crate::quadri::MEDIDAS {
+            assert!(n.iter().all(|e| e.endereco != Some(pos as u16)), "{pos}");
+        }
     }
 
     #[test]

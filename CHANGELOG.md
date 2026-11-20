@@ -1,5 +1,15 @@
 # Changelog
 
+## Não publicado
+Suporte à **Ragtech Quadri** (testado: Quadri 1200 VA, 115 V). Ela não fala o protocolo da família 10: até a 0.13.1 o serviço parava com `cabeçalho inesperado 0x55`.
+- **Protocolo da Quadri, só escuta** (`quadri.rs`): o nobreak transmite sozinho um quadro de 32 bytes (`55 55` + medidas + soma `S + (S >> 8)`) a cada ~1,33 s. O serviço só lê: nenhum byte é escrito na porta. Tensões de entrada, saída e bateria, carga, temperatura, frequência (estimativa) e o bit de ausência de rede (byte 18, `0x10`) conferidos contra o software oficial em três capturas USB, incluindo uma queda de energia de ~100 s. Mapa completo e metodologia em `docs/quadri1200va.md`.
+- **`NOBREAK_PROTOCOLO`** (`auto`, `familia10`, `quadri`): em `auto` (padrão), a cada abertura da porta o serviço escuta por até 3 s **sem enviar nada**; com quadro válido da Quadri, fica nela; senão, segue com a família 10 como antes (só 3 s a mais na primeira leitura).
+- **Carga da bateria da Quadri** calculada pela tensão (o quadro não traz porcentagem): ≈ 0 % em 10,0 V e 100 % em 13,8 V, como o software oficial mostra (±1 ponto de 72 % a 100 %).
+- **Sem medida, sem número inventado:** `corrente_saida_a` e `firmware` passam a ser `null` quando o protocolo não traz o valor; o arquivo do NUT omite `output.current`/`output.apower` e a métrica `nobreak_saida_amperes` some. O painel mostra "—" na corrente e na potência.
+- **Painel:** a linha de bytes crus mostra o quadro da Quadri, e o log de eventos usa a posição do byte (`byte 18`).
+- **Simulador:** `NOBREAK_SIMULAR=1` com `NOBREAK_PROTOCOLO=quadri` gera quadros reais da Quadri, com uma queda a cada 60 ciclos.
+- Testes com seis quadros reais (rede, carga de 10 %, início, meio e fim da queda, recarga).
+
 ## 0.13.1 (15/nov/2026)
 - **Build:** o `backend/Cargo.lock` ficou fora do commit da 0.13.0 e o CI (`cargo test --locked`) recusou atualizá-lo. Mesmo conteúdo da 0.13.0, publicada com o lock versionado.
 

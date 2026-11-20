@@ -1,8 +1,47 @@
 //! Origem dos dados: porta serial real ou simulador (para desenvolvimento e CI).
 
-use crate::leitura::{Brutos, BASE, TAM_BLOCO};
+use crate::leitura::{Bruto, Brutos, BASE, TAM_BLOCO};
 use crate::protocolo;
+use crate::quadri::{self, Quadro};
 use std::time::{Duration, Instant};
+
+/// Protocolo da porta serial, de `NOBREAK_PROTOCOLO`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Protocolo {
+    /// Escuta sem enviar nada: se chegar quadro da Quadri, usa a Quadri; senão, família 10.
+    Auto,
+    /// Famílias 10/13/15 (Easy Pro, NEP...): pergunta e lê registradores.
+    Familia10,
+    /// Quadri: só escuta os quadros que o nobreak transmite sozinho.
+    Quadri,
+}
+
+impl Protocolo {
+    pub fn de_texto(s: &str) -> Option<Protocolo> {
+        match s.trim().to_lowercase().as_str() {
+            "" | "auto" => Some(Protocolo::Auto),
+            "familia10" | "família10" | "10" => Some(Protocolo::Familia10),
+            "quadri" => Some(Protocolo::Quadri),
+            _ => None,
+        }
+    }
+
+    pub fn nome(self) -> &'static str {
+        match self {
+            Protocolo::Auto => "auto",
+            Protocolo::Familia10 => "familia10",
+            Protocolo::Quadri => "quadri",
+        }
+    }
+}
+
+/// Quanto a detecção escuta antes de concluir que não é uma Quadri. Ela transmite um
+/// quadro a cada ~1,33 s, então 3 s cobrem pelo menos dois quadros.
+const ESCUTA_DETECCAO: Duration = Duration::from_millis(3000);
+/// Prazo para chegar um quadro novo da Quadri a cada ciclo.
+const ESCUTA_QUADRI: Duration = Duration::from_millis(3000);
+/// Limite do que fica guardado esperando virar quadro.
+const MAX_PENDENTE: usize = 4096;
 
 pub enum Fonte {
     Serial {
@@ -17,12 +56,21 @@ pub enum Fonte {
         /// `idVendor:idProduct` do USB, aprendido na primeira abertura boa. É o que
         /// permite reencontrar o aparelho quando ele troca de nome.
         identidade: Option<String>,
+        /// Protocolo configurado (`NOBREAK_PROTOCOLO`).
+        protocolo: Protocolo,
+        /// O que a escuta inicial descobriu (só em `Auto`). Refeito a cada reabertura.
+        detectado: Option<Protocolo>,
+        /// Bytes da Quadri que ainda não formaram um quadro.
+        pendente: Vec<u8>,
     },
+    /// Simulador da família 10.
     Simulada(u32),
+    /// Simulador da Quadri (quadros reais, com uma queda a cada 60 ciclos).
+    SimuladaQuadri(u32),
 }
 
 impl Fonte {
-    pub fn serial_com(caminho: String, extras: Vec<String>, id: u8) -> Self {
+    pub fn serial_com(caminho: String, extras: Vec<String>, id: u8, protocolo: Protocolo) -> Self {
         Fonte::Serial {
             caminho,
             extras,
@@ -30,14 +78,21 @@ impl Fonte {
             porta: None,
             ultimo_bom: None,
             identidade: None,
+            protocolo,
+            detectado: None,
+            pendente: Vec::new(),
         }
     }
 
-    pub fn ler_tudo(&mut self) -> Result<Brutos, String> {
+    pub fn ler_tudo(&mut self) -> Result<Bruto, String> {
         match self {
             Fonte::Simulada(n) => {
                 *n = n.wrapping_add(1);
-                Ok(simulado(*n))
+                Ok(Bruto::Familia10(simulado(*n)))
+            }
+            Fonte::SimuladaQuadri(n) => {
+                *n = n.wrapping_add(1);
+                Ok(Bruto::Quadri(simulado_quadri(*n)))
             }
             Fonte::Serial {
                 caminho,
@@ -46,33 +101,107 @@ impl Fonte {
                 porta,
                 ultimo_bom,
                 identidade,
+                protocolo,
+                detectado,
+                pendente,
             } => {
                 if porta.is_none() {
                     abrir(caminho, extras, identidade, ultimo_bom, porta)?;
+                    pendente.clear();
+                    *detectado = None;
                 }
                 let r = (|| {
-                    let p = porta.as_mut().unwrap();
-                    let bloco = ler(p.as_mut(), *id, BASE, TAM_BLOCO as u8)?;
-                    let cal = ler(p.as_mut(), *id, 0x00F3, 1)?;
-                    let cap = ler(p.as_mut(), *id, 0x0136, 1)?;
-                    let osc = ler(p.as_mut(), *id, 0x0202, 2)?;
-                    let mut b = [0u8; TAM_BLOCO];
-                    b.copy_from_slice(&bloco);
-                    Ok(Brutos {
-                        bloco: b,
-                        calibracao: cal[0],
-                        cap_bateria: cap[0],
-                        osc53: osc[0],
-                        osc57: osc[1],
-                    })
+                    let p = porta.as_mut().unwrap().as_mut();
+                    let efetivo = match (*protocolo, *detectado) {
+                        (Protocolo::Auto, Some(d)) => d,
+                        (x, _) => x,
+                    };
+                    match efetivo {
+                        Protocolo::Quadri => ler_quadri(p, pendente).map(Bruto::Quadri),
+                        Protocolo::Familia10 => ler_familia10(p, *id).map(Bruto::Familia10),
+                        // Detecção: só escuta. Uma Quadri nunca recebe o pedido da família 10.
+                        Protocolo::Auto => match escutar_quadri(p, pendente, ESCUTA_DETECCAO)? {
+                            Some(q) => {
+                                *detectado = Some(Protocolo::Quadri);
+                                println!("protocolo detectado: quadri (o nobreak transmite quadros sozinho)");
+                                Ok(Bruto::Quadri(q))
+                            }
+                            None => {
+                                *detectado = Some(Protocolo::Familia10);
+                                println!("protocolo detectado: familia10 (nenhum quadro da Quadri em 3 s)");
+                                ler_familia10(p, *id).map(Bruto::Familia10)
+                            }
+                        },
+                    }
                 })();
                 if r.is_err() {
-                    *porta = None; // reabre no próximo ciclo
+                    *porta = None; // reabre (e, em `Auto`, detecta de novo) no próximo ciclo
                 }
                 r
             }
         }
     }
+}
+
+fn ler_familia10(p: &mut dyn serialport::SerialPort, id: u8) -> Result<Brutos, String> {
+    let bloco = ler(p, id, BASE, TAM_BLOCO as u8)?;
+    let cal = ler(p, id, 0x00F3, 1)?;
+    let cap = ler(p, id, 0x0136, 1)?;
+    let osc = ler(p, id, 0x0202, 2)?;
+    let mut b = [0u8; TAM_BLOCO];
+    b.copy_from_slice(&bloco);
+    Ok(Brutos {
+        bloco: b,
+        calibracao: cal[0],
+        cap_bateria: cap[0],
+        osc53: osc[0],
+        osc57: osc[1],
+    })
+}
+
+/// Lê até chegar um quadro válido da Quadri ou acabar o prazo. **Não escreve nada.**
+fn escutar_quadri(
+    p: &mut dyn serialport::SerialPort,
+    pendente: &mut Vec<u8>,
+    prazo: Duration,
+) -> Result<Option<Quadro>, String> {
+    let limite = Instant::now() + prazo;
+    let mut tmp = [0u8; 128];
+    loop {
+        if let Some(q) = quadri::extrair(pendente) {
+            return Ok(Some(q));
+        }
+        if Instant::now() >= limite {
+            return Ok(None);
+        }
+        match p.read(&mut tmp) {
+            Ok(0) => {}
+            Ok(k) => {
+                pendente.extend_from_slice(&tmp[..k]);
+                if pendente.len() > MAX_PENDENTE {
+                    let sobra = pendente.len() - MAX_PENDENTE;
+                    pendente.drain(..sobra);
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {}
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+}
+
+/// Um quadro novo da Quadri: descarta o que acumulou desde o último ciclo e espera o próximo.
+fn ler_quadri(
+    p: &mut dyn serialport::SerialPort,
+    pendente: &mut Vec<u8>,
+) -> Result<Quadro, String> {
+    let _ = p.clear(serialport::ClearBuffer::Input);
+    pendente.clear();
+    escutar_quadri(p, pendente, ESCUTA_QUADRI)?.ok_or_else(|| {
+        format!(
+            "nenhum quadro válido da Quadri em {} s",
+            ESCUTA_QUADRI.as_secs()
+        )
+    })
 }
 
 /// Abre a porta tentando, nesta ordem: o último caminho que funcionou, o caminho
@@ -226,6 +355,7 @@ fn mensagem_falha(caminho: &str, falhas: &[String], identidade: Option<&str>) ->
     m
 }
 
+/// Pedido de leitura da família 10 e resposta. Só para a família 10: a Quadri não é perguntada.
 fn ler(p: &mut dyn serialport::SerialPort, id: u8, end: u16, n: u8) -> Result<Vec<u8>, String> {
     let _ = p.clear(serialport::ClearBuffer::Input);
     p.write_all(&protocolo::pedido_leitura(id, end, n))
@@ -280,9 +410,54 @@ fn simulado(n: u32) -> Brutos {
     }
 }
 
+/// Simulador da Quadri: quadros reais (rede normal e queda), com a bateria descendo na
+/// queda e a entrada oscilando. A soma de verificação é refeita a cada quadro.
+fn simulado_quadri(n: u32) -> Quadro {
+    const NORMAL: &str = "5555ae0e09897263df6cac0027c2302710000004037bc101e400630f112708ee";
+    const QUEDA: &str = "5555ae0e09897263df6cac00273028241100100c0307c301cf00630f112a07e5";
+    let fase = n % 60;
+    let queda = (30..42).contains(&fase);
+    let hex = if queda { QUEDA } else { NORMAL };
+    let mut b = [0u8; quadri::TAM_QUADRO];
+    for (i, x) in b.iter_mut().enumerate() {
+        *x = u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).unwrap();
+    }
+    if queda {
+        b[24] = b[24].saturating_sub(((fase - 30) * 2) as u8); // bateria descendo
+    } else {
+        b[21] = b[21].wrapping_add((n % 3) as u8); // entrada oscilando
+    }
+    let s = quadri::soma(&b).to_be_bytes();
+    b[30] = s[0];
+    b[31] = s[1];
+    Quadro::de_bytes(&b).expect("soma refeita")
+}
+
 #[cfg(test)]
 mod testes {
     use super::*;
+
+    #[test]
+    fn protocolo_de_texto() {
+        assert_eq!(Protocolo::de_texto(""), Some(Protocolo::Auto));
+        assert_eq!(Protocolo::de_texto("Quadri"), Some(Protocolo::Quadri));
+        assert_eq!(Protocolo::de_texto("familia10"), Some(Protocolo::Familia10));
+        assert_eq!(Protocolo::de_texto("10"), Some(Protocolo::Familia10));
+        assert_eq!(Protocolo::de_texto("xyz"), None);
+    }
+
+    #[test]
+    fn simulador_da_quadri_gera_quadros_validos_e_queda() {
+        let mut fonte = Fonte::SimuladaQuadri(0);
+        let mut viu_queda = false;
+        for _ in 0..60 {
+            match fonte.ler_tudo().unwrap() {
+                Bruto::Quadri(q) => viu_queda |= q.sem_rede(),
+                Bruto::Familia10(_) => panic!("simulador da Quadri deu família 10"),
+            }
+        }
+        assert!(viu_queda);
+    }
 
     #[test]
     fn ordem_comeca_pelo_ultimo_bom_e_nao_repete() {

@@ -1,7 +1,8 @@
 <script lang="ts">
   import type { Eventos } from './api'
   import { t, val, dataHora, textoEvento, trad } from './i18n.svelte'
-  let { dados }: { dados: Eventos | null } = $props()
+  // Na Quadri o "endereço" de um evento é a posição do byte no quadro de 32 bytes.
+  let { dados, quadri = false }: { dados: Eventos | null; quadri?: boolean } = $props()
 
   const MAX = 80
   const hex = (n: number) => '0x' + n.toString(16).padStart(2, '0')
@@ -36,7 +37,7 @@
               <tr class:destaque={e.tipo === 'status' || e.tipo === 'conexao'}>
                 <td data-r={t('ev.quando')}>{dataHora(e.t, true, virouAno)}</td>
                 {#if e.tipo === 'registrador' && e.endereco !== null && e.de !== null && e.para !== null}
-                  <td data-r={t('ev.oque')}>{hex(e.endereco)} {nomeReg(e.endereco)}</td>
+                  <td data-r={t('ev.oque')}>{quadri ? `byte ${e.endereco}` : `${hex(e.endereco)} ${nomeReg(e.endereco)}`}</td>
                   <td data-r={t('ev.mudanca')} class="mud">{#if e.texto}<span class="nome">{textoEvento(e.tipo, e.texto)}</span>{/if}
                     <span class="tec">{hex(e.de)} → {hex(e.para)} <span class="bits">{bin(e.de)} → {bin(e.para)}</span> <b>{bits(e.de, e.para)}</b></span></td>
                 {:else if e.tipo === 'inicio'}

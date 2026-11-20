@@ -19,6 +19,7 @@ services:
       # NOBREAK_PORTAS_ALTERNATIVAS: /dev/ttyACM0,/dev/ttyACM1
       NOBREAK_INTERVALO_S: "5"
       # NOBREAK_FATOR_VBAT: "2"   # se a tensão da bateria aparecer pela metade
+      # NOBREAK_PROTOCOLO: quadri # padrão auto: detecta Quadri ou família 10 sozinho
     mem_limit: 32m
     read_only: true
     cap_drop: [ALL]

@@ -4,10 +4,10 @@
 Lê a porta USB do nobreak e mostra bateria, tensão de entrada e saída, carga, temperatura e frequência
 num painel web. Sem Windows, sem Java, sem o Supervise.
 
-Serve para quem tem um nobreak **Ragtech Easy Pro, Easy Way, Easy Jet, NEP, Toro, Innergie ou Save Digital**
+Serve para quem tem um nobreak **Ragtech Easy Pro, Easy Way, Easy Jet, NEP, Toro, Innergie, Save Digital ou Quadri**
 ligado por USB num servidor, NAS ou Raspberry Pi, e o software oficial não roda bem (ou não roda).
 
-> **Status: alfa.** Só leitura. O projeto nunca escreve no nobreak. Testado em um Easy Pro 1200 VA.
+> **Status: alfa.** Só leitura. O projeto nunca escreve no nobreak. Testado em um Easy Pro 1200 VA e numa Quadri 1200 VA.
 > Outros modelos devem funcionar, mas precisam de gente testando: veja [Ajude a testar](#ajude-a-testar).
 
 ## Recursos
@@ -69,7 +69,8 @@ Sem Docker, baixe o binário em [Releases](../../releases) e rode `./nobreak-rag
 | `NOBREAK_PORTAS_ALTERNATIVAS` | vazio | Caminhos extras de serial, separados por vírgula. Desde a 0.8.0 o serviço já procura sozinho o mesmo aparelho (`idVendor:idProduct`) quando o caminho configurado não abre |
 | `NOBREAK_ESCUTA` | `0.0.0.0:8080` | Endereço do painel |
 | `NOBREAK_INTERVALO_S` | `5` | Segundos entre leituras |
-| `NOBREAK_ID` | `A` | Nibble de endereço do quadro (hex). O padrão serve para a maioria |
+| `NOBREAK_PROTOCOLO` | `auto` | `auto` escuta a porta por até 3 s sem enviar nada: se chegar quadro da Quadri, usa a Quadri; senão, a família 10. `quadri` ou `familia10` pulam a detecção |
+| `NOBREAK_ID` | `A` | Nibble de endereço do quadro (hex), só na família 10. O padrão serve para a maioria |
 | `NOBREAK_FATOR_VBAT` | `1` | Multiplica a tensão da bateria. Use `2` se o valor aparecer pela metade do medido |
 | `NOBREAK_ARQUIVO_NUT` | vazio | Caminho do arquivo para o `dummy-ups` do NUT |
 | `NOBREAK_ARQUIVO_EVENTOS` | vazio | Arquivo `.jsonl` para guardar o registro de mudanças entre reinícios (pasta com escrita) |
@@ -87,13 +88,15 @@ Sem Docker, baixe o binário em [Releases](../../releases) e rode `./nobreak-rag
 | `NOBREAK_NOTIFICAR_EVENTOS` | vazio (todos) | Lista separada por vírgula: `queda`, `rede_voltou`, `alarme`, `desconectado`, `reconectado`, `saude` |
 | `NOBREAK_HISTORICO_PONTOS` | `1440` | Pontos guardados nos gráficos (memória, ~50 bytes cada) |
 | `NOBREAK_HISTORICO_INTERVALO_S` | `60` | Segundos entre pontos dos gráficos |
-| `NOBREAK_SIMULAR` | `0` | `1` usa dados de exemplo, com uma queda de energia simulada a cada minuto (para testar o painel) |
+| `NOBREAK_SIMULAR` | `0` | `1` usa dados de exemplo, com uma queda de energia simulada a cada minuto (para testar o painel). Com `NOBREAK_PROTOCOLO=quadri`, simula a Quadri |
 
 ## Modelos
 
 A família do protocolo que está implementada cobre os nobreaks Ragtech com USB que respondem ao quadro
-`A0|id` (famílias 10, 13 e 15 do software oficial). Confirmado: **NEP/Easy Pro 1200 TI**. Veja a tabela e o
-status de cada modelo em [`docs/modelos.md`](docs/modelos.md).
+`A0|id` (famílias 10, 13 e 15 do software oficial). Confirmado: **NEP/Easy Pro 1200 TI**. A **Quadri** usa outro
+quadro, que o nobreak transmite sozinho: o serviço detecta e só escuta (confirmado: **Quadri 1200 VA**, veja
+[`docs/quadri1200va.md`](docs/quadri1200va.md)). Veja a tabela e o status de cada modelo em
+[`docs/modelos.md`](docs/modelos.md).
 
 ## Como funciona
 

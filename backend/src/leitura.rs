@@ -1,7 +1,9 @@
 //! Decodifica os registradores da família 10/13/15 em medidas físicas.
 //! Fórmulas obtidas por engenharia reversa (ver `docs/protocolo.md`).
+//! A Quadri usa outro quadro: ver `quadri.rs`.
 
 use crate::modelos::{self, Modelo};
+use crate::quadri::{self, Quadro};
 use serde::Serialize;
 
 pub const BASE: u16 = 0x0080;
@@ -23,6 +25,66 @@ impl Brutos {
     }
 }
 
+/// Leitura crua de um ciclo, no formato do protocolo que o nobreak fala.
+#[derive(Clone, Debug)]
+pub enum Bruto {
+    /// Famílias 10/13/15: bloco de registradores lido por pedido.
+    Familia10(Brutos),
+    /// Quadri: quadro de 32 bytes que o nobreak transmite sozinho.
+    Quadri(Quadro),
+}
+
+impl Bruto {
+    /// Nome do protocolo, como em `NOBREAK_PROTOCOLO`.
+    pub fn protocolo(&self) -> &'static str {
+        match self {
+            Bruto::Familia10(_) => "familia10",
+            Bruto::Quadri(_) => "quadri",
+        }
+    }
+
+    /// Bytes crus em hexadecimal: registradores `0x80..=0x9D` ou o quadro inteiro.
+    pub fn hex(&self) -> String {
+        match self {
+            Bruto::Familia10(b) => b.bloco.iter().map(|x| format!("{x:02x}")).collect(),
+            Bruto::Quadri(q) => q.hex(),
+        }
+    }
+}
+
+/// Resultado da decodificação, igual para os dois protocolos. `flags` só existe na família 10.
+pub struct Decodificado {
+    pub info: InfoModelo,
+    pub medidas: Medidas,
+    pub flags: Option<Flags>,
+    pub status: String,
+}
+
+pub fn decodificar_bruto(b: &Bruto, fator_vbat: f32) -> Decodificado {
+    match b {
+        Bruto::Familia10(b) => {
+            let (info, medidas, flags) = decodificar(b, fator_vbat);
+            let status = status_nut(&medidas, &flags);
+            Decodificado {
+                info,
+                medidas,
+                flags: Some(flags),
+                status,
+            }
+        }
+        Bruto::Quadri(q) => {
+            let (info, medidas) = quadri::decodificar(q, fator_vbat);
+            let status = quadri::status_nut(q, &medidas);
+            Decodificado {
+                info,
+                medidas,
+                flags: None,
+                status,
+            }
+        }
+    }
+}
+
 #[derive(Serialize, Clone, Debug)]
 pub struct Flags {
     pub nvolatil: u8,
@@ -39,11 +101,13 @@ pub struct Medidas {
     pub tensao_bateria_v: f32,
     pub tensao_entrada_v: f32,
     pub tensao_saida_v: f32,
-    pub corrente_saida_a: f32,
+    /// `None` quando o protocolo não mede corrente (Quadri).
+    pub corrente_saida_a: Option<f32>,
     pub carga_saida_pct: f32,
     pub temperatura_c: f32,
     pub frequencia_hz: Option<f32>,
-    pub firmware: f32,
+    /// `None` quando o protocolo não informa a versão (Quadri).
+    pub firmware: Option<f32>,
     /// Contador regressivo de desligamento (registrador `0x98`), em segundos. `0` = parado.
     pub contagem_regressiva_s: u8,
 }
@@ -81,11 +145,11 @@ pub fn decodificar(b: &Brutos, fator_vbat: f32) -> (InfoModelo, Medidas, Flags) 
         tensao_bateria_v: vbat_raw * esc_vbat * fator_vbat,
         tensao_entrada_v: b.reg(0x8B) as f32 * 1.06,
         tensao_saida_v: b.reg(0x9D) as f32 * if m220 { 1.03 } else { 0.555 },
-        corrente_saida_a: b.reg(0x8C) as f32 * esc_i / cal,
+        corrente_saida_a: Some(b.reg(0x8C) as f32 * esc_i / cal),
         carga_saida_pct: b.reg(0x8D) as f32,
         temperatura_c: b.reg(0x8E) as f32,
         frequencia_hz: freq,
-        firmware: b.reg(0x9B) as f32 * 0.1,
+        firmware: Some(b.reg(0x9B) as f32 * 0.1),
         contagem_regressiva_s: b.reg(0x98),
     };
     let info = InfoModelo {
@@ -159,7 +223,7 @@ mod testes {
             "{}",
             m.tensao_saida_v
         );
-        assert!(m.corrente_saida_a < 1.0);
+        assert!(m.corrente_saida_a.unwrap() < 1.0);
     }
 
     #[test]

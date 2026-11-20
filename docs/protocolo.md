@@ -1,6 +1,7 @@
 # Protocolo serial dos nobreaks Ragtech (famílias 10, 13 e 15)
 
 Documentado por engenharia reversa de interoperabilidade. Nada aqui é código do fabricante.
+A **Quadri** usa outro quadro, que o nobreak transmite sozinho: veja [`quadri1200va.md`](quadri1200va.md).
 Marcado como **[confirmado]** o que foi validado contra um nobreak real e **[hipótese]** o que não foi.
 
 ## Enlace

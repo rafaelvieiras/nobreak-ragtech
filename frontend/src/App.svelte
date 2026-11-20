@@ -77,7 +77,9 @@
 
   const rotulosFlags: [keyof NonNullable<Estado['flags']>, number][] = [['nvolatil', 0x80], ['eventos', 0x90], ['falhas', 0x91], ['usuario', 0x92], ['gerais2', 0x95]]
   const nomeReg = (end: number) => trad('reg.' + hex(end).replace(/^0x(.*)$/, (_, x) => '0x' + x.toUpperCase()), hex(end))
-  const regsTexto = $derived(e?.registradores_hex ? `0x80…0x9D: ${e.registradores_hex.match(/../g)?.join(' ')} · 0xF3: ${h2(e.calibracao_0xf3)} · 0x136: ${h2(e.capacidade_0x136)} · 0x202–0x203: ${e.osc_0x202?.map(h2).join(' ') ?? '—'}` : '')
+  const regsTexto = $derived(!e?.registradores_hex ? ''
+    : e.protocolo === 'quadri' ? `bytes 0…31 (Quadri): ${e.registradores_hex.match(/../g)?.join(' ')}`
+    : `0x80…0x9D: ${e.registradores_hex.match(/../g)?.join(' ')} · 0xF3: ${h2(e.calibracao_0xf3)} · 0x136: ${h2(e.capacidade_0x136)} · 0x202–0x203: ${e.osc_0x202?.map(h2).join(' ') ?? '—'}`)
   async function copiar() {
     try { await navigator.clipboard.writeText(regsTexto); copiado = true; setTimeout(() => (copiado = false), 1500) } catch { /* sem permissão */ }
   }
@@ -89,7 +91,7 @@
   <header>
     <div>
       <h1>{t('app.titulo')}</h1>
-      <div class="sub">{e?.modelo?.nome ?? '—'}{#if e?.medidas}<span aria-hidden="true">&nbsp;·&nbsp;</span><span class="sr">, </span>firmware&nbsp;{num(e.medidas.firmware, 1, 2)}{/if}</div>
+      <div class="sub">{e?.modelo?.nome ?? '—'}{#if e?.medidas && e.medidas.firmware !== null}<span aria-hidden="true">&nbsp;·&nbsp;</span><span class="sr">, </span>firmware&nbsp;{num(e.medidas.firmware, 1, 2)}{/if}</div>
     </div>
     <div class="topo-sel">
       {#if nAvisos > 0}<a class="chip" href="#saude">{tp('chip.avisos', nAvisos)}</a>{/if}
@@ -155,7 +157,7 @@
       <Cartao rotulo={t('c.freq')} valor={num(m.frequencia_hz, 1)} unidade="Hz" dica={m.frequencia_hz === null ? t('c.sem_cal') : t('c.estimada')} />
       <Cartao rotulo={t('c.corr')} valor={num(m.corrente_saida_a, 2)} unidade="A" />
       <Cartao rotulo={t('c.carga_saida')} valor={num(m.carga_saida_pct, 0)} unidade="%" barra={m.carga_saida_pct} limiar={[80, 100]} />
-      <Cartao rotulo={t('c.pot')} valor={num(m.tensao_saida_v * m.corrente_saida_a, 0)} unidade="VA" dica={t('c.calculada')} />
+      <Cartao rotulo={t('c.pot')} valor={m.corrente_saida_a === null ? '—' : num(m.tensao_saida_v * m.corrente_saida_a, 0)} unidade="VA" dica={t('c.calculada')} />
     </div>
   {:else if carregando}
     <div class="grade obsoleto" aria-busy="true">
@@ -230,7 +232,7 @@
 
       {#if ev}
         <h2>{t('sec.eventos')}</h2>
-        <Eventos dados={ev} />
+        <Eventos dados={ev} quadri={e?.protocolo === 'quadri'} />
       {/if}
 
       {#if e?.registradores_hex}

@@ -1,7 +1,7 @@
 export interface Medidas {
   carga_bateria_pct: number; tensao_bateria_v: number
-  tensao_entrada_v: number; tensao_saida_v: number; corrente_saida_a: number
-  carga_saida_pct: number; temperatura_c: number; frequencia_hz: number | null; firmware: number
+  tensao_entrada_v: number; tensao_saida_v: number; corrente_saida_a: number | null
+  carga_saida_pct: number; temperatura_c: number; frequencia_hz: number | null; firmware: number | null
   contagem_regressiva_s: number
 }
 export interface Flags { nvolatil: number; eventos: number; falhas: number; usuario: number; gerais2: number }
@@ -9,6 +9,7 @@ export interface Alarme { codigo: string; texto: string; gravidade: 'info' | 'av
 export interface Estado {
   conectado: boolean; ultimo_erro: string | null; atualizado_em: number | null
   falhas_seguidas: number; leituras_ok: number
+  protocolo: 'familia10' | 'quadri' | null
   modelo: { indice: number; nome: string; reconhecido: boolean } | null
   status: string | null; medidas: Medidas | null; flags: Flags | null; alarmes: Alarme[]
   registradores_hex: string | null; calibracao_0xf3: number | null; capacidade_0x136: number | null; osc_0x202: [number, number] | null
@@ -31,7 +32,7 @@ export interface Eventos { eventos: Evento[]; registradores: Record<string, { mu
 export interface Serie {
   intervalo_s: number; t: number[]
   bateria_pct: number[]; bateria_v: number[]; entrada_v: number[]; saida_v: number[]
-  corrente_a: number[]; carga_pct: number[]; temperatura_c: number[]
+  corrente_a: (number | null)[]; carga_pct: number[]; temperatura_c: number[]
 }
 
 async function get<T>(url: string): Promise<T> {

@@ -9,12 +9,13 @@ mod modelos;
 mod notificar;
 mod politica;
 mod protocolo;
+mod quadri;
 mod quedas;
 
 use alarmes::{Alarme, Gravidade};
-use fonte::Fonte;
+use fonte::{Fonte, Protocolo};
 use historico::Historico;
-use leitura::{decodificar, status_nut, Brutos, Flags, InfoModelo, Medidas};
+use leitura::{decodificar_bruto, Bruto, Flags, InfoModelo, Medidas};
 use longa::SerieLonga;
 use notificar::{Destino, Detector, Leitura, Notif, Notificador};
 use quedas::Quedas;
@@ -39,13 +40,16 @@ struct Estado {
     sem_leitura_desde: Option<u64>,
     falhas_seguidas: u32,
     leituras_ok: u64,
+    /// Protocolo da última leitura boa: `familia10` ou `quadri`.
+    protocolo: Option<&'static str>,
     modelo: Option<InfoModelo>,
     status: Option<String>,
     medidas: Option<Medidas>,
     flags: Option<Flags>,
     /// Alarmes ligados agora (bits com significado conhecido).
     alarmes: Vec<Alarme>,
-    /// Registradores 0x80..=0x9D em hexadecimal, para engenharia reversa.
+    /// Bytes crus em hexadecimal, para engenharia reversa: registradores 0x80..=0x9D
+    /// (família 10) ou o quadro de 32 bytes (Quadri).
     registradores_hex: Option<String>,
     calibracao_0xf3: Option<u8>,
     capacidade_0x136: Option<u8>,
@@ -67,6 +71,8 @@ struct Config {
     escuta: String,
     intervalo: Duration,
     id: u8,
+    /// `NOBREAK_PROTOCOLO`: `auto` (padrão), `familia10` ou `quadri`.
+    protocolo: Protocolo,
     simular: bool,
     arquivo_nut: Option<String>,
     fator_vbat: f32,
@@ -117,6 +123,15 @@ fn config() -> Config {
         intervalo: Duration::from_secs(env("NOBREAK_INTERVALO_S", "5").parse().unwrap_or(5).max(1)),
         id: u8::from_str_radix(env("NOBREAK_ID", "A").trim_start_matches("0x"), 16).unwrap_or(0xA)
             & 0x0F,
+        protocolo: {
+            let v = env("NOBREAK_PROTOCOLO", "auto");
+            Protocolo::de_texto(&v).unwrap_or_else(|| {
+                eprintln!(
+                    "NOBREAK_PROTOCOLO={v} não existe (use auto, familia10 ou quadri); usando auto"
+                );
+                Protocolo::Auto
+            })
+        },
         simular: env("NOBREAK_SIMULAR", "0") == "1",
         arquivo_nut: std::env::var("NOBREAK_ARQUIVO_NUT")
             .ok()
@@ -266,17 +281,26 @@ fn agora() -> u64 {
         .unwrap_or(0)
 }
 
-fn aplicar(e: &mut Estado, b: &Brutos, fator_vbat: f32) {
-    let (info, medidas, flags) = decodificar(b, fator_vbat);
-    e.status = Some(status_nut(&medidas, &flags));
-    e.alarmes = alarmes::ativos(&flags);
-    e.registradores_hex = Some(b.bloco.iter().map(|x| format!("{x:02x}")).collect());
-    e.calibracao_0xf3 = Some(b.calibracao);
-    e.capacidade_0x136 = Some(b.cap_bateria);
-    e.osc_0x202 = Some([b.osc53, b.osc57]);
-    e.modelo = Some(info);
-    e.medidas = Some(medidas);
-    e.flags = Some(flags);
+fn aplicar(e: &mut Estado, b: &Bruto, fator_vbat: f32) {
+    let d = decodificar_bruto(b, fator_vbat);
+    e.status = Some(d.status);
+    e.alarmes = match b {
+        Bruto::Familia10(_) => d.flags.as_ref().map(alarmes::ativos).unwrap_or_default(),
+        Bruto::Quadri(q) => alarmes::ativos_quadri(&q.0),
+    };
+    e.protocolo = Some(b.protocolo());
+    e.registradores_hex = Some(b.hex());
+    (e.calibracao_0xf3, e.capacidade_0x136, e.osc_0x202) = match b {
+        Bruto::Familia10(b) => (
+            Some(b.calibracao),
+            Some(b.cap_bateria),
+            Some([b.osc53, b.osc57]),
+        ),
+        Bruto::Quadri(_) => (None, None, None),
+    };
+    e.modelo = Some(d.info);
+    e.medidas = Some(d.medidas);
+    e.flags = d.flags;
     e.conectado = true;
     e.ultimo_erro = None;
     e.falhas_seguidas = 0;
@@ -329,14 +353,20 @@ fn arquivo_nut(e: &Estado, lb_apos_s: Option<u64>) -> Option<String> {
     let m = e.medidas.as_ref()?;
     e.status.as_ref()?;
     let l = |k: &str, v: String| format!("{k}: {v}\n");
-    let pot = m.tensao_saida_v * m.corrente_saida_a;
+    // Sem medida de corrente (Quadri), `output.current` e `output.apower` ficam de fora.
+    let corrente = m
+        .corrente_saida_a
+        .map(|i| {
+            l("output.current", format!("{i:.2}"))
+                + &l("output.apower", format!("{:.1}", m.tensao_saida_v * i))
+        })
+        .unwrap_or_default();
     Some(
         l("battery.charge", format!("{:.0}", m.carga_bateria_pct))
             + &l("battery.voltage", format!("{:.2}", m.tensao_bateria_v))
             + &l("input.voltage", format!("{:.0}", m.tensao_entrada_v))
             + &l("output.voltage", format!("{:.0}", m.tensao_saida_v))
-            + &l("output.current", format!("{:.2}", m.corrente_saida_a))
-            + &l("output.apower", format!("{pot:.1}"))
+            + &corrente
             + &l("ups.temperature", format!("{:.0}", m.temperatura_c))
             + &l("ups.load", format!("{:.0}", m.carga_saida_pct))
             + &l("ups.status", status_para_nut(e, lb_apos_s))
@@ -388,10 +418,15 @@ fn coletor(
     longa: Arc<Mutex<SerieLonga>>,
     mut notif: Option<Notificador>,
 ) {
-    let mut fonte = if cfg.simular {
-        Fonte::Simulada(0)
-    } else {
-        Fonte::serial_com(cfg.porta.clone(), cfg.portas_alternativas.clone(), cfg.id)
+    let mut fonte = match (cfg.simular, cfg.protocolo) {
+        (true, Protocolo::Quadri) => Fonte::SimuladaQuadri(0),
+        (true, _) => Fonte::Simulada(0),
+        (false, p) => Fonte::serial_com(
+            cfg.porta.clone(),
+            cfg.portas_alternativas.clone(),
+            cfg.id,
+            p,
+        ),
     };
     let mut pol = politica::Politica::nova(cfg.politica.clone());
     let mut ac = acoes::Acoes::nova(cfg.acoes.clone());
@@ -666,11 +701,9 @@ fn metricas(e: &Estado, q: &Quedas, cfg: &Config) -> String {
             m.tensao_entrada_v as f64,
         );
         g("saida_volts", "tensão de saída", m.tensao_saida_v as f64);
-        g(
-            "saida_amperes",
-            "corrente de saída",
-            m.corrente_saida_a as f64,
-        );
+        if let Some(i) = m.corrente_saida_a {
+            g("saida_amperes", "corrente de saída", i as f64);
+        }
         g("carga_pct", "carga na saída em %", m.carga_saida_pct as f64);
         g(
             "temperatura_celsius",
@@ -966,9 +999,10 @@ fn main() {
     };
     let escuta = cfg.escuta.clone();
     eprintln!(
-        "nobreak-ragtech {} | porta={} escuta={} intervalo={}s simular={} fator_vbat={}",
+        "nobreak-ragtech {} | porta={} protocolo={} escuta={} intervalo={}s simular={} fator_vbat={}",
         env!("CARGO_PKG_VERSION"),
         cfg.porta,
+        cfg.protocolo.nome(),
         cfg.escuta,
         cfg.intervalo.as_secs(),
         cfg.simular,
@@ -1050,5 +1084,26 @@ mod testes_nut {
         assert_eq!(status_para_nut(&e, Some(300)), "OL"); // com rede nunca inventa LB
         e.status = Some("OB LB".to_string());
         assert_eq!(status_para_nut(&e, Some(300)), "OB LB"); // não duplica
+    }
+
+    #[test]
+    fn quadri_no_arquivo_do_nut() {
+        use crate::quadri::testes::{quadro, QUEDA};
+        let mut e = Estado::default();
+        aplicar(&mut e, &Bruto::Quadri(quadro(QUEDA)), 1.0);
+        assert_eq!(e.protocolo, Some("quadri"));
+        assert!(e.flags.is_none());
+        assert_eq!(e.alarmes.len(), 1);
+        let txt = arquivo_nut(&e, None).unwrap();
+        assert!(txt.contains("ups.status: OB\n"), "{txt}");
+        assert!(txt.contains("output.voltage: 115\n"), "{txt}");
+        assert!(txt.contains("battery.voltage: 12.79\n"), "{txt}");
+        assert!(
+            txt.contains("ups.alarm: Ausencia de rede eletrica\n"),
+            "{txt}"
+        );
+        // a Quadri não mede corrente: nada de inventar 0 A
+        assert!(!txt.contains("output.current"), "{txt}");
+        assert!(!txt.contains("output.apower"), "{txt}");
     }
 }
